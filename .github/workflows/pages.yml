@@ -1,0 +1,88 @@
+name: DNF-репозиторий
+
+on:
+  repository_dispatch:
+    types:
+      - publish-pages
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Получить исходный код
+        uses: actions/checkout@v4
+
+      - name: Установить генератор метаданных DNF
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y createrepo-c rpm
+
+      - name: Скачать RPM последнего выпуска
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-assets public/repo
+          gh release download \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'naps3-*.red80.x86_64.rpm' \
+            --dir release-assets
+          rpm_path="$(find release-assets -maxdepth 1 -type f -name 'naps3-*.red80.x86_64.rpm' | head -n 1)"
+          if [[ -z "$rpm_path" ]]; then
+            echo "RPM последнего выпуска не найден" >&2
+            exit 1
+          fi
+          cp "$rpm_path" public/repo/
+
+      - name: Создать DNF-репозиторий и страницу установки
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          createrepo_c public/repo
+
+          owner="${GITHUB_REPOSITORY%%/*}"
+          repository="${GITHUB_REPOSITORY#*/}"
+          owner_lower="${owner,,}"
+          base_url="https://${owner_lower}.github.io/${repository}"
+          version="$(rpm -qp --queryformat '%{VERSION}' public/repo/*.rpm)"
+
+          cat > public/naps3.repo <<EOF
+          [naps3]
+          name=NAPS3 for RED OS 8
+          baseurl=${base_url}/repo/
+          enabled=1
+          gpgcheck=0
+          repo_gpgcheck=0
+          EOF
+
+          cat > public/index.html <<EOF
+          <!doctype html>
+          <html lang="ru"><head><meta charset="utf-8"><title>NAPS3 для РЕД ОС</title></head>
+          <body><h1>NAPS3 для РЕД ОС</h1>
+          <p>DNF-репозиторий версии ${version}.</p>
+          <pre>sudo curl -fsSL ${base_url}/naps3.repo -o /etc/yum.repos.d/naps3.repo &amp;&amp; sudo dnf install -y naps3</pre>
+          <p><a href="https://github.com/${GITHUB_REPOSITORY}/releases/latest">Скачать выпуск</a></p>
+          </body></html>
+          EOF
+
+      - name: Загрузить сайт репозитория
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: Опубликовать DNF-репозиторий
+        id: deployment
+        uses: actions/deploy-pages@v4

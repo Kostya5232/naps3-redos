@@ -7,19 +7,10 @@ on:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-24.04
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
       - name: Получить исходный код
@@ -29,7 +20,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            createrepo-c \
             gir1.2-gtk-3.0 \
             poppler-utils \
             python3-gi \
@@ -57,7 +47,7 @@ jobs:
       - name: Собрать RPM
         run: ./build_rpm.sh
 
-      - name: Подготовить выпуск и DNF-репозиторий
+      - name: Подготовить выпуск
         id: package
         shell: bash
         run: |
@@ -71,34 +61,6 @@ jobs:
           stable_path="dist/naps3-latest.x86_64.rpm"
           cp "$rpm_path" "$stable_path"
           sha256sum "$rpm_path" "$stable_path" > dist/SHA256SUMS
-
-          mkdir -p public/repo
-          cp "$rpm_path" public/repo/
-          createrepo_c public/repo
-
-          owner="${GITHUB_REPOSITORY%%/*}"
-          repository="${GITHUB_REPOSITORY#*/}"
-          owner_lower="${owner,,}"
-          base_url="https://${owner_lower}.github.io/${repository}"
-
-          cat > public/naps3.repo <<EOF
-          [naps3]
-          name=NAPS3 for RED OS 8
-          baseurl=${base_url}/repo/
-          enabled=1
-          gpgcheck=0
-          repo_gpgcheck=0
-          EOF
-
-          cat > public/index.html <<EOF
-          <!doctype html>
-          <html lang="ru"><head><meta charset="utf-8"><title>NAPS3 для РЕД ОС</title></head>
-          <body><h1>NAPS3 для РЕД ОС</h1>
-          <p>DNF-репозиторий версии ${GITHUB_REF_NAME#v}.</p>
-          <pre>sudo curl -fsSL ${base_url}/naps3.repo -o /etc/yum.repos.d/naps3.repo &amp;&amp; sudo dnf install -y naps3</pre>
-          <p><a href="https://github.com/${GITHUB_REPOSITORY}/releases/latest">Скачать выпуск</a></p>
-          </body></html>
-          EOF
 
           echo "rpm_path=$rpm_path" >> "$GITHUB_OUTPUT"
           echo "stable_path=$stable_path" >> "$GITHUB_OUTPUT"
@@ -128,12 +90,9 @@ jobs:
             --title "NAPS3 ${GITHUB_REF_NAME#v}" \
             --notes-file release-notes.md
 
-      - name: Загрузить сайт репозитория
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: public
-
-      - name: Опубликовать DNF-репозиторий
-        id: deployment
-        uses: actions/deploy-pages@v4
-
+      - name: Запустить публикацию DNF-репозитория
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/dispatches" \
+            -f event_type=publish-pages
