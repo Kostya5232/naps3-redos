@@ -27,7 +27,7 @@ jobs:
             xvfb
 
       - name: Проверить синтаксис
-        run: /usr/bin/python3 -m py_compile naps3.py
+        run: /usr/bin/python3 -m py_compile naps3.py windows_backend.py
 
       - name: Выполнить модульные тесты
         run: /usr/bin/python3 -m unittest discover -s tests -p 'test_*.py'
@@ -42,3 +42,4 @@ jobs:
           bash -n uninstall.sh
           bash -n update_naps3_app.sh
           bash -n packaging/naps3-launcher
+          bash -n windows/build_windows.sh

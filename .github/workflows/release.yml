@@ -1,4 +1,4 @@
-name: Выпуск RPM
+name: Выпуск NAPS3
 
 on:
   push:
@@ -9,9 +9,8 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  linux:
     runs-on: ubuntu-24.04
-
     steps:
       - name: Получить исходный код
         uses: actions/checkout@v5
@@ -38,55 +37,143 @@ jobs:
             exit 1
           fi
 
-      - name: Выполнить тесты
+      - name: Выполнить тесты Linux
         run: |
-          /usr/bin/python3 -m py_compile naps3.py
+          /usr/bin/python3 -m py_compile naps3.py windows_backend.py
           /usr/bin/python3 -m unittest discover -s tests -p 'test_*.py'
           xvfb-run -a env PYTHONPATH=. /usr/bin/python3 tests/gtk_smoke.py
 
       - name: Собрать RPM
         run: ./build_rpm.sh
 
-      - name: Подготовить выпуск
-        id: package
+      - name: Подготовить RPM
         shell: bash
         run: |
           set -Eeuo pipefail
           rpm_path="$(find dist -maxdepth 1 -type f -name 'naps3-*.x86_64.rpm' ! -name '*latest*' | head -n 1)"
-          if [[ -z "$rpm_path" ]]; then
-            echo "RPM не найден" >&2
-            exit 1
-          fi
+          [[ -n "$rpm_path" ]] || { echo "RPM не найден" >&2; exit 1; }
+          cp "$rpm_path" dist/naps3-latest.x86_64.rpm
+          (
+            cd dist
+            sha256sum "$(basename "$rpm_path")" naps3-latest.x86_64.rpm > SHA256SUMS.linux
+          )
 
-          stable_path="dist/naps3-latest.x86_64.rpm"
-          cp "$rpm_path" "$stable_path"
-          sha256sum "$rpm_path" > dist/SHA256SUMS
+      - name: Загрузить RPM для выпуска
+        uses: actions/upload-artifact@v6
+        with:
+          name: naps3-linux
+          path: |
+            dist/naps3-*.red80.x86_64.rpm
+            dist/naps3-latest.x86_64.rpm
+            dist/SHA256SUMS.linux
+          if-no-files-found: error
 
-          echo "rpm_path=$rpm_path" >> "$GITHUB_OUTPUT"
-          echo "stable_path=$stable_path" >> "$GITHUB_OUTPUT"
+  windows:
+    runs-on: windows-2022
+    steps:
+      - name: Получить исходный код
+        uses: actions/checkout@v5
+
+      - name: Проверить версию тега
+        shell: pwsh
+        run: |
+          $source = Get-Content -LiteralPath naps3.py -Raw
+          $version = [regex]::Match($source, '(?m)^APP_VERSION = "([^"]+)"').Groups[1].Value
+          $tagVersion = $env:GITHUB_REF_NAME.TrimStart('v')
+          if (-not $version -or $version -ne $tagVersion) {
+            throw "Версия приложения $version не совпадает с тегом $env:GITHUB_REF_NAME"
+          }
+
+      - name: Установить Python, GTK и Poppler
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gtk3
+            mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-python-gobject
+            mingw-w64-ucrt-x86_64-python-pillow
+            mingw-w64-ucrt-x86_64-poppler
+            mingw-w64-ucrt-x86_64-pyinstaller
+
+      - name: Выполнить тесты Windows
+        shell: msys2 {0}
+        run: |
+          python -m py_compile naps3.py windows_backend.py
+          python -m unittest discover -s tests -p 'test_*.py'
+          powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File windows/wia_bridge.ps1 -Action selftest
+
+      - name: Собрать переносимую программу
+        shell: msys2 {0}
+        run: ./windows/build_windows.sh
+
+      - name: Проверить собранную программу
+        shell: pwsh
+        run: .\dist\windows\NAPS3\NAPS3.exe --self-test
+
+      - name: Собрать установщик и ZIP
+        shell: pwsh
+        run: .\windows\build_installer.ps1
+
+      - name: Подготовить постоянную ссылку Windows
+        shell: pwsh
+        run: |
+          $release = Resolve-Path .\dist\windows\release
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          Copy-Item -LiteralPath "$release\NAPS3-$version-Windows-x64.exe" -Destination "$release\NAPS3-latest-Windows-x64.exe"
+          $files = Get-ChildItem -LiteralPath $release -File | Where-Object Name -Match '\.(exe|zip)$'
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          [IO.File]::WriteAllLines("$release\SHA256SUMS.windows", $lines, [Text.UTF8Encoding]::new($false))
+
+      - name: Загрузить Windows-пакет для выпуска
+        uses: actions/upload-artifact@v6
+        with:
+          name: naps3-windows
+          path: |
+            dist/windows/release/*.exe
+            dist/windows/release/*.zip
+            dist/windows/release/SHA256SUMS.windows
+          if-no-files-found: error
+
+  publish:
+    needs:
+      - linux
+      - windows
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Получить исходный код
+        uses: actions/checkout@v5
+
+      - name: Скачать собранные пакеты
+        uses: actions/download-artifact@v6
+        with:
+          pattern: naps3-*
+          path: release-assets
+          merge-multiple: true
 
       - name: Создать выпуск GitHub
         env:
           GH_TOKEN: ${{ github.token }}
-          RPM_PATH: ${{ steps.package.outputs.rpm_path }}
-          STABLE_PATH: ${{ steps.package.outputs.stable_path }}
         shell: bash
         run: |
           set -Eeuo pipefail
           cat > release-notes.md <<'EOF'
-          Версия 0.7 для РЕД ОС 8 x86_64.
+          Версия 0.8 для РЕД ОС 8 x86_64 и Windows 10/11 x64.
 
-          - Восстановление соединения остаётся привязано к выбранному МФУ.
-          - Изменение страниц блокируется во время сохранения.
-          - Экспорт использует временные файлы, проверку и откат.
-          - При закрытии предлагается сохранить несохранённый документ.
+          - Добавлена Windows-сборка с системным backend Windows Image Acquisition.
+          - Интерфейс, страницы, импорт и защищённое сохранение одинаковы на обеих ОС.
+          - Повтор после сна остаётся привязан к точному выбранному WIA-устройству.
+          - Linux backend SANE/eSCL и исправленный транспорт HP сохранены.
 
-          `naps3-latest.x86_64.rpm` — постоянная ссылка для установки одной командой.
+          `NAPS3-latest-Windows-x64.exe` — постоянная ссылка на установщик Windows.
+          `naps3-latest.x86_64.rpm` — постоянная ссылка для установки в РЕД ОС.
           EOF
           gh release create "$GITHUB_REF_NAME" \
-            "$RPM_PATH" \
-            "$STABLE_PATH" \
-            "dist/SHA256SUMS" \
+            release-assets/* \
             --title "NAPS3 ${GITHUB_REF_NAME#v}" \
             --notes-file release-notes.md
 

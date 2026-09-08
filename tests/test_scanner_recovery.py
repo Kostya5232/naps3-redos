@@ -39,6 +39,7 @@ class ScannerRecoveryTests(PatchedTestCase):
             cancel_requested=False,
             set_status=mock.Mock(),
             _scan_once=mock.Mock(return_value=([Path("other.png")], "", self.other)),
+            _scan_windows_wia=mock.Mock(),
             _scan_direct_escl=mock.Mock(),
             _retryable_device_error=naps3.MainWindow._retryable_device_error,
         )
@@ -168,6 +169,48 @@ class ScannerRecoveryTests(PatchedTestCase):
         self.owner._scan_once.assert_called_once()
         self.discovery.assert_not_called()
 
+    def test_wia_scan_uses_exact_selected_device_without_discovery(self):
+        selected = {
+            "name": "Kyocera ECOSYS MA4000x",
+            "device_id": r"WIA\\selected-kyocera",
+            "backend": "wia",
+            "connection_kind": "windows-wia",
+        }
+        pages = [Path("front.png"), Path("back.png")]
+        self.owner._scan_windows_wia.return_value = (pages, "", selected)
+
+        self.assertEqual(self.scan(selected), (pages, selected))
+        self.owner._scan_windows_wia.assert_called_once()
+        self.assertEqual(
+            self.owner._scan_windows_wia.call_args.args[1]["device_id"],
+            selected["device_id"],
+        )
+        self.owner._scan_once.assert_not_called()
+        self.discovery.assert_not_called()
+
+    def test_sleeping_wia_device_retries_same_device_once(self):
+        selected = {
+            "name": "Kyocera ECOSYS MA4000x",
+            "device_id": r"WIA\\selected-kyocera",
+            "backend": "wia",
+            "connection_kind": "windows-wia",
+        }
+        pages = [Path("page.png")]
+        self.owner._scan_windows_wia.side_effect = [
+            ([], "WIA 0x80210005: Offline", selected),
+            (pages, "", selected),
+        ]
+        sleep = self.patch(naps3.time, "sleep")
+
+        self.assertEqual(self.scan(selected), (pages, selected))
+        self.assertEqual(self.owner._scan_windows_wia.call_count, 2)
+        self.assertEqual(
+            [call.args[1]["device_id"] for call in self.owner._scan_windows_wia.call_args_list],
+            [selected["device_id"], selected["device_id"]],
+        )
+        sleep.assert_called_once_with(2.0)
+        self.discovery.assert_not_called()
+
 
 class StartupProfileTests(PatchedTestCase):
     def setUp(self):
@@ -190,6 +233,7 @@ class StartupProfileTests(PatchedTestCase):
             naps3, "discover_usb_scanners", return_value=[self.other]
         )
         self.probe = self.patch(naps3, "probe_escl_url", return_value=True)
+        self.wia_probe = self.patch(naps3, "probe_wia_device", return_value=True)
         self.process = self.patch(
             naps3.subprocess, "run",
             return_value=SimpleNamespace(returncode=0, stdout=b""),
@@ -293,6 +337,23 @@ class StartupProfileTests(PatchedTestCase):
         self.usb_discovery.assert_not_called()
         self.probe.assert_not_called()
         self.process.assert_not_called()
+
+    def test_saved_wia_profile_probes_only_exact_device(self):
+        selected = {
+            "name": "Kyocera ECOSYS MA4000x",
+            "device_id": r"WIA\\selected-kyocera",
+            "backend": "wia",
+            "connection_kind": "windows-wia",
+        }
+        self.owner.scanner_profile = selected
+        naps3.MainWindow._probe_saved_profile_async(self.owner)
+        self.finish_probe()
+
+        self.wia_probe.assert_called_once_with(selected["device_id"])
+        self.probe.assert_not_called()
+        self.process.assert_not_called()
+        self.discovery.assert_not_called()
+        self.usb_discovery.assert_not_called()
 
     def test_late_probe_does_not_overwrite_manual_selection(self):
         naps3.MainWindow._probe_saved_profile_async(self.owner)

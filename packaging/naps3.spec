@@ -5,7 +5,7 @@
 %global _licensedir /usr/share/licenses
 
 Name:           naps3
-Version:        0.7
+Version:        0.8
 Release:        1.red80
 Summary:        Сканирование документов через SANE и eSCL
 License:        MIT AND BSD-2-Clause
@@ -39,6 +39,8 @@ rm -rf %{buildroot}
 
 install -Dpm0755 naps3.py \
     %{buildroot}%{_libexecdir}/naps3/naps3.py
+install -Dpm0644 windows_backend.py \
+    %{buildroot}%{_libexecdir}/naps3/windows_backend.py
 install -Dpm0755 ipp-usb-naps3 \
     %{buildroot}%{_libexecdir}/naps3/ipp-usb-naps3
 install -Dpm0644 ipp-usb.conf \
@@ -67,7 +69,7 @@ install -Dpm0644 LICENSE.ipp-usb \
     %{buildroot}%{_licensedir}/%{name}/LICENSE.ipp-usb
 
 %check
-/usr/bin/python3 -m py_compile naps3.py
+/usr/bin/python3 -m py_compile naps3.py windows_backend.py
 /usr/bin/bash -n packaging/naps3-launcher
 
 %post
@@ -90,6 +92,7 @@ exit 0
 %{_bindir}/naps3
 %dir %{_libexecdir}/naps3
 %{_libexecdir}/naps3/naps3.py
+%{_libexecdir}/naps3/windows_backend.py
 %{_libexecdir}/naps3/ipp-usb-naps3
 %dir %{_libexecdir}/naps3/ipp-usb-conf
 %{_libexecdir}/naps3/ipp-usb-conf/ipp-usb.conf
@@ -105,6 +108,11 @@ exit 0
 %license %{_licensedir}/%{name}/LICENSE.ipp-usb
 
 %changelog
+* Tue Sep 08 2026 NAPS3 contributors <noreply@localhost> - 0.8-1.red80
+- Добавлена отдельная сборка для Windows с системным backend WIA.
+- Linux backend SANE/eSCL и существующий интерфейс сохранены.
+- Импорт PDF использует встроенный pdftoppm в Windows-пакете.
+
 * Tue Sep 08 2026 NAPS3 contributors <noreply@localhost> - 0.7-1.red80
 - Восстановление соединения больше не переключает задание на другое МФУ.
 - Изменения страниц блокируются во время сохранения.

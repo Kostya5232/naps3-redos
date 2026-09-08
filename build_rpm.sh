@@ -19,7 +19,7 @@ if [[ -z "$VERSION" ]]; then
 fi
 
 for file in \
-    naps3.py naps3.svg naps3.png ipp-usb.conf ipp-usb-naps3 \
+    naps3.py windows_backend.py naps3.svg naps3.png ipp-usb.conf ipp-usb-naps3 \
     ipp-usb-m428.conf LICENSE LICENSE.ipp-usb README.txt RPM_INSTALL.txt \
     packaging/naps3.spec packaging/naps3-launcher \
     packaging/ru.redos.NAPS3.desktop \
@@ -82,7 +82,7 @@ mkdir -p \
     "$SOURCE_DIR/packaging"
 
 for file in \
-    naps3.py naps3.svg naps3.png ipp-usb.conf ipp-usb-naps3 \
+    naps3.py windows_backend.py naps3.svg naps3.png ipp-usb.conf ipp-usb-naps3 \
     ipp-usb-m428.conf LICENSE LICENSE.ipp-usb README.txt RPM_INSTALL.txt; do
     install -m 0644 "$SCRIPT_DIR/$file" "$SOURCE_DIR/$file"
 done
