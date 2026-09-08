@@ -60,7 +60,7 @@ jobs:
 
           stable_path="dist/naps3-latest.x86_64.rpm"
           cp "$rpm_path" "$stable_path"
-          sha256sum "$rpm_path" "$stable_path" > dist/SHA256SUMS
+          sha256sum "$rpm_path" > dist/SHA256SUMS
 
           echo "rpm_path=$rpm_path" >> "$GITHUB_OUTPUT"
           echo "stable_path=$stable_path" >> "$GITHUB_OUTPUT"
