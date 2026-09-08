@@ -329,6 +329,7 @@ class CancellationTests(unittest.TestCase):
                 os.killpg(process.pid, 9)
                 process.wait(timeout=2)
 
+    @unittest.skipIf(os.name == "nt", "SANE subprocess test is Linux-specific")
     def test_sane_adf_worker_exits_after_cancel(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

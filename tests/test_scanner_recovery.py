@@ -18,6 +18,9 @@ class PatchedTestCase(unittest.TestCase):
 
 class ScannerRecoveryTests(PatchedTestCase):
     def setUp(self) -> None:
+        # Existing recovery cases exercise the Linux SANE path even when the
+        # suite itself runs on a Windows build runner.
+        self.patch(naps3, "IS_WINDOWS", new=False)
         self.selected = {
             "name": "Kyocera ECOSYS MA4000x",
             "device_id": "airscan:e0:Kyocera ECOSYS MA4000x",
