@@ -3,6 +3,7 @@ name: Проверка Windows
 on:
   push:
     branches:
+      - main
       - windows-support
   pull_request:
   workflow_dispatch:

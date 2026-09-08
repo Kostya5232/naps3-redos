@@ -59,7 +59,7 @@ flowchart TD
 | [packaging/naps3-launcher](packaging/naps3-launcher) | Запуск установленного приложения и запись ошибок в `startup.log`. |
 | [packaging/ru.redos.NAPS3.desktop](packaging/ru.redos.NAPS3.desktop) | Ярлык приложения в системном меню. |
 | [build_rpm.sh](build_rpm.sh) | Сборка RPM для x86_64, размещение результата и контрольной суммы в `dist/`. |
-| [.github/workflows/checks.yml](.github/workflows/checks.yml) | Проверка синтаксиса, 69 модульных тестов, GTK smoke-тест и проверка shell-скриптов при каждом обновлении `main`. |
+| [.github/workflows/checks.yml](.github/workflows/checks.yml) | Проверка синтаксиса, 78 модульных тестов, GTK smoke-тест и проверка shell-скриптов при каждом обновлении `main`. |
 | [.github/workflows/release.yml](.github/workflows/release.yml) | По тегу `v*` повторяет тесты, собирает RPM, создаёт GitHub Release и запускает публикацию DNF. |
 | [.github/workflows/pages.yml](.github/workflows/pages.yml) | Создаёт метаданные DNF из последнего выпуска и публикует их через GitHub Pages. |
 | [install_redos8.sh](install_redos8.sh) | Ручная установка в `/opt/naps3`, зависимости и настройка службы ipp-usb. |
