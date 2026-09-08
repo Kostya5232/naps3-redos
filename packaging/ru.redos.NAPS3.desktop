@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=NAPS3
+GenericName=Сканирование документов
+Comment=Многостраничное сканирование и сохранение PDF/изображений
+Exec=/usr/bin/naps3
+Icon=naps3
+Terminal=false
+StartupWMClass=NAPS3
+DBusActivatable=false
+Categories=Graphics;Scanning;
+Keywords=сканер;сканирование;PDF;изображения;ADF;
+StartupNotify=true

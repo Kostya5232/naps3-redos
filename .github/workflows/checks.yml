@@ -1,0 +1,45 @@
+name: Проверка
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Получить исходный код
+        uses: actions/checkout@v4
+
+      - name: Установить зависимости тестов
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gir1.2-gtk-3.0 \
+            poppler-utils \
+            python3-gi \
+            python3-pil \
+            xvfb
+
+      - name: Проверить синтаксис
+        run: /usr/bin/python3 -m py_compile naps3.py
+
+      - name: Выполнить модульные тесты
+        run: /usr/bin/python3 -m unittest discover -s tests -p 'test_*.py'
+
+      - name: Выполнить GTK smoke-тест
+        run: xvfb-run -a env PYTHONPATH=. /usr/bin/python3 tests/gtk_smoke.py
+
+      - name: Проверить shell-скрипты
+        run: |
+          bash -n build_rpm.sh
+          bash -n install_redos8.sh
+          bash -n uninstall.sh
+          bash -n update_naps3_app.sh
+          bash -n packaging/naps3-launcher
+

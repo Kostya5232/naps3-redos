@@ -1,0 +1,259 @@
+#!/usr/bin/env bash
+# Установка или обновление NAPS3 0.7 на РЕД ОС 8.
+# Запуск: sudo ./install_redos8.sh --user имя_пользователя
+
+set -Eeuo pipefail
+
+TARGET_USER=""
+
+while (($#)); do
+    case "$1" in
+        --user)
+            [[ $# -ge 2 ]] || {
+                echo "После --user нужно имя пользователя." >&2
+                exit 2
+            }
+            TARGET_USER="$2"
+            shift 2
+            ;;
+        -h|--help)
+            echo "Использование: sudo $0 [--user ИМЯ]"
+            exit 0
+            ;;
+        *)
+            echo "Неизвестный параметр: $1" >&2
+            exit 2
+            ;;
+    esac
+done
+
+if [[ $EUID -ne 0 ]]; then
+    echo "Запустите установщик через sudo или от root." >&2
+    exit 1
+fi
+
+if rpm -q naps3 >/dev/null 2>&1; then
+    echo "Обнаружен RPM-пакет NAPS3. Ручной установщик нельзя" >&2
+    echo "запускать поверх RPM: они управляют одними и теми же файлами." >&2
+    echo "Для обновления установите новый RPM через dnf." >&2
+    exit 1
+fi
+
+if [[ $(uname -m) != "x86_64" ]]; then
+    echo "Исправленный ipp-usb этой сборки предназначен для x86_64." >&2
+    exit 1
+fi
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+for file in \
+    naps3.py naps3.svg naps3.png ipp-usb.conf \
+    ipp-usb-naps3 ipp-usb-m428.conf ipp-usb-naps3.service.conf \
+    LICENSE.ipp-usb; do
+    [[ -f "$SCRIPT_DIR/$file" ]] || {
+        echo "В папке установщика отсутствует файл: $file" >&2
+        exit 1
+    }
+done
+
+package_exists() {
+    dnf -q list --showduplicates "$1" >/dev/null 2>&1
+}
+
+install_first_available() {
+    local candidate
+    for candidate in "$@"; do
+        if package_exists "$candidate"; then
+            dnf -y install "$candidate"
+            return 0
+        fi
+    done
+
+    echo "В подключённых репозиториях не найден пакет: $*" >&2
+    return 1
+}
+
+install_optional_first_available() {
+    local candidate
+    for candidate in "$@"; do
+        if package_exists "$candidate"; then
+            dnf -y install "$candidate"
+            return 0
+        fi
+    done
+
+    echo "Предупреждение: дополнительный пакет не найден: $*" >&2
+    return 0
+}
+
+echo "Установка системных компонентов…"
+dnf -y makecache
+
+install_first_available python3
+install_first_available python3-gobject pygobject3
+install_first_available gtk3
+install_first_available python3-pillow python3-Pillow
+install_first_available sane-backends
+install_first_available sane-airscan
+install_first_available ipp-usb
+install_optional_first_available hplip hplip-common
+install_first_available poppler-utils poppler
+
+# The distro example enables trace-all and DNS-SD retries. Both are unsuitable
+# on a production workstation with Avahi disabled and slow down colour duplex.
+install -d -m 755 /etc/ipp-usb
+install -m 644 "$SCRIPT_DIR/ipp-usb.conf" /etc/ipp-usb/ipp-usb.conf
+
+# РЕД ОС 8 поставляет ipp-usb 0.9.27. На M428/M429 он читает цветной
+# eSCL-поток по 4096 байт и после каждого 8-КиБ USB burst получает ZLP,
+# добавляя к нему 10 мс backoff. Исправленная сборка использует большой
+# входной буфер и не делает эту паузу только для точного VID:PID M428/M429.
+# Системный пакет не перезаписывается: drop-in легко вернуть удалением.
+install -d -m 755 /opt/naps3
+install -m 755 "$SCRIPT_DIR/ipp-usb-naps3" /opt/naps3/ipp-usb-naps3
+install -m 644 "$SCRIPT_DIR/LICENSE.ipp-usb" /opt/naps3/LICENSE.ipp-usb
+install -d -m 755 /etc/ipp-usb/quirks
+install -m 644 \
+    "$SCRIPT_DIR/ipp-usb-m428.conf" \
+    /etc/ipp-usb/quirks/90-naps3-hp-m428.conf
+install -d -m 755 /etc/systemd/system/ipp-usb.service.d
+install -m 644 \
+    "$SCRIPT_DIR/ipp-usb-naps3.service.conf" \
+    /etc/systemd/system/ipp-usb.service.d/90-naps3-m428.conf
+
+# На M428/M429 hpaio может видеть USB-устройство, но падать с I/O
+# при открытии. ipp-usb даёт стабильный eSCL для стекла и АПД.
+# Unit статический и запускается udev, поэтому enable ему не нужен.
+systemctl unmask ipp-usb.service 2>/dev/null || true
+systemctl daemon-reload
+systemctl restart ipp-usb.service 2>/dev/null || true
+
+echo "Остановка запущенной старой версии NAPS3…"
+pkill -f '/opt/naps3/naps3.py' 2>/dev/null || true
+sleep 1
+
+install -d -m 755 /opt/naps3
+install -m 755 "$SCRIPT_DIR/naps3.py" /opt/naps3/naps3.py.new
+mv -f /opt/naps3/naps3.py.new /opt/naps3/naps3.py
+install -m 644 "$SCRIPT_DIR/naps3.png" /opt/naps3/naps3.png
+rm -rf /opt/naps3/__pycache__
+
+install -d -m 755 /usr/share/icons/hicolor/scalable/apps
+install -m 644 \
+    "$SCRIPT_DIR/naps3.svg" \
+    /usr/share/icons/hicolor/scalable/apps/naps3.svg
+
+install -d -m 755 /usr/share/icons/hicolor/256x256/apps
+install -m 644 \
+    "$SCRIPT_DIR/naps3.png" \
+    /usr/share/icons/hicolor/256x256/apps/naps3.png
+
+cat >/usr/local/bin/naps3 <<'EOF'
+#!/usr/bin/env bash
+unset PYTHONHOME
+unset PYTHONPATH
+export PYTHONNOUSERSITE=1
+export PYTHONUNBUFFERED=1
+
+LOG_DIR="${HOME}/.cache/naps3"
+LOG_FILE="${LOG_DIR}/startup.log"
+mkdir -p "$LOG_DIR"
+touch "$LOG_FILE"
+
+{
+    echo
+    echo "===== NAPS3 start: $(date --iso-8601=seconds 2>/dev/null || date) ====="
+    echo "User: $(id -un)  Display: ${DISPLAY:-<none>}"
+} >>"$LOG_FILE"
+
+/usr/bin/python3 /opt/naps3/naps3.py "$@"     2> >(tee -a "$LOG_FILE" >&2)
+STATUS=$?
+
+if ((STATUS != 0)); then
+    SUMMARY="$(tail -n 12 "$LOG_FILE" | sed 's/[<>&]/ /g')"
+
+    if command -v zenity >/dev/null 2>&1 && [[ -n "${DISPLAY:-}" ]]; then
+        zenity --error             --title="NAPS3 — ошибка запуска"             --width=520             --text="NAPS3 не удалось запустить.\n\n$SUMMARY\n\nЖурнал: $LOG_FILE"             >/dev/null 2>&1 || true
+    elif command -v notify-send >/dev/null 2>&1 && [[ -n "${DISPLAY:-}" ]]; then
+        notify-send             "NAPS3 — ошибка запуска"             "Подробности сохранены в $LOG_FILE"             >/dev/null 2>&1 || true
+    fi
+fi
+
+exit "$STATUS"
+EOF
+chmod 755 /usr/local/bin/naps3
+
+cat >/usr/share/applications/ru.redos.NAPS3.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=NAPS3
+GenericName=Сканирование документов
+Comment=Многостраничное USB-сканирование HP и сохранение PDF/изображений
+Exec=/usr/local/bin/naps3
+Icon=naps3
+Terminal=false
+StartupWMClass=NAPS3
+DBusActivatable=false
+Categories=Graphics;Scanning;
+Keywords=сканер;сканирование;PDF;изображения;HP;ADF;
+StartupNotify=true
+EOF
+
+# Удаляем ярлык старой сборки, чтобы в меню не было дублей.
+rm -f /usr/share/applications/naps3.desktop
+
+update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+gtk-update-icon-cache -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
+
+if [[ -n "$TARGET_USER" ]] && id "$TARGET_USER" >/dev/null 2>&1; then
+    user_home="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+    desktop_dir=""
+
+    for candidate in "$user_home/Рабочий стол" "$user_home/Desktop"; do
+        if [[ -d "$candidate" ]]; then
+            desktop_dir="$candidate"
+            break
+        fi
+    done
+
+    if [[ -n "$desktop_dir" ]]; then
+        rm -f "$desktop_dir/NAPS3.desktop"
+        cp \
+            /usr/share/applications/ru.redos.NAPS3.desktop \
+            "$desktop_dir/NAPS3.desktop"
+        chown \
+            "$TARGET_USER:$(id -gn "$TARGET_USER")" \
+            "$desktop_dir/NAPS3.desktop"
+        chmod 755 "$desktop_dir/NAPS3.desktop"
+
+        runuser -u "$TARGET_USER" -- \
+            gio set \
+            "$desktop_dir/NAPS3.desktop" \
+            metadata::trusted true \
+            >/dev/null 2>&1 || true
+    fi
+fi
+
+/usr/bin/python3 -m py_compile /opt/naps3/naps3.py
+
+INSTALLED_VERSION="$(
+    sed -nE 's/^APP_VERSION = "([^"]+)"/\1/p' /opt/naps3/naps3.py |
+    head -n 1
+)"
+if [[ "$INSTALLED_VERSION" != "0.7" ]]; then
+    echo "Ошибка проверки: установлена версия '$INSTALLED_VERSION', ожидалась 0.7." >&2
+    exit 1
+fi
+
+cmp -s "$SCRIPT_DIR/ipp-usb-naps3" /opt/naps3/ipp-usb-naps3 || {
+    echo "Ошибка проверки исправленного ipp-usb." >&2
+    exit 1
+}
+
+echo
+echo "NAPS3 $INSTALLED_VERSION установлен или обновлён."
+echo "USB M428/M429 больше не ждёт 10 мс после каждого 8-КиБ блока страницы."
+echo
+echo "Полностью закройте старое окно NAPS3 и запустите приложение снова:"
+echo "  naps3"
