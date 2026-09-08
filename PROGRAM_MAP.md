@@ -41,16 +41,19 @@ flowchart TD
 | Файл или каталог | Назначение |
 | --- | --- |
 | [naps3.py](naps3.py) | Приложение: GTK, обнаружение устройств, сканирование, страницы, импорт и экспорт. |
+| [README.md](README.md) | Публичная страница проекта и команды установки из GitHub Release или DNF-репозитория. |
 | [tests/test_naps3.py](tests/test_naps3.py) | 19 тестовых методов: разбор eSCL, ручной дуплекс, экспорт, отмена и работа со страницами. |
 | [tests/test_scanner_recovery.py](tests/test_scanner_recovery.py) | 20 тестов сохранения выбранного устройства при ошибках, восстановлении и фоновой проверке при запуске. |
 | [tests/test_save_safety.py](tests/test_save_safety.py) | 30 тестов защиты файлов, блокировки редактирования, учёта несохранённых изменений и закрытия. |
-| [diagnostics/recovery-fix/README.md](diagnostics/recovery-fix/README.md) | Описание исправления, исходник до изменений и результаты проверок. |
-| [diagnostics/save-safety/README.md](diagnostics/save-safety/README.md) | Доработка сохранения и закрытия, границы защиты файлов и результаты проверок. |
+| `diagnostics/` | Локальные журналы, резервные копии и отчёты проверок. Каталог исключён из публичного Git-репозитория. |
 | [tests/gtk_smoke.py](tests/gtk_smoke.py) | Проверка настоящего окна GTK с тестовыми страницами и отключённым поиском оборудования. |
 | [packaging/naps3.spec](packaging/naps3.spec) | Состав RPM, системные зависимости, проверки сборки и действия при установке/удалении. |
 | [packaging/naps3-launcher](packaging/naps3-launcher) | Запуск установленного приложения и запись ошибок в `startup.log`. |
 | [packaging/ru.redos.NAPS3.desktop](packaging/ru.redos.NAPS3.desktop) | Ярлык приложения в системном меню. |
 | [build_rpm.sh](build_rpm.sh) | Сборка RPM для x86_64, размещение результата и контрольной суммы в `dist/`. |
+| [.github/workflows/checks.yml](.github/workflows/checks.yml) | Проверка синтаксиса, 69 модульных тестов, GTK smoke-тест и проверка shell-скриптов при каждом обновлении `main`. |
+| [.github/workflows/release.yml](.github/workflows/release.yml) | По тегу `v*` повторяет тесты, собирает RPM, создаёт GitHub Release и запускает публикацию DNF. |
+| [.github/workflows/pages.yml](.github/workflows/pages.yml) | Создаёт метаданные DNF из последнего выпуска и публикует их через GitHub Pages. |
 | [install_redos8.sh](install_redos8.sh) | Ручная установка в `/opt/naps3`, зависимости и настройка службы ipp-usb. |
 | [update_naps3_app.sh](update_naps3_app.sh) | Обновление `naps3.py` в RPM- или ручной установке с резервной копией. |
 | [uninstall.sh](uninstall.sh) | Удаление ручной установки; при установленном RPM направляет к `dnf remove`. |
@@ -62,7 +65,26 @@ flowchart TD
 | [naps3.svg](naps3.svg), [naps3.png](naps3.png) | Значки приложения. |
 | [README.txt](README.txt), [RPM_INSTALL.txt](RPM_INSTALL.txt) | Пользовательское описание, история версий и инструкции установки. |
 | [LICENSE](LICENSE), [LICENSE.ipp-usb](LICENSE.ipp-usb) | Лицензии приложения и поставляемого транспорта. |
-| `dist/` | Готовый `naps3-0.7-1.red80.x86_64.rpm`, `SHA256SUMS` и сопроводительные инструкции. |
+| `dist/` | Локальная копия готового RPM, `SHA256SUMS` и инструкции. Каталог исключён из Git; пакет публикуется в Releases и Pages. |
+
+## Публикация и обновления
+
+```mermaid
+flowchart LR
+    MainBranch["Ветка main"] --> Checks["checks.yml · тесты"]
+    Tag["Тег v0.7"] --> Release["release.yml"]
+    Release --> Tests["69 тестов + GTK smoke"]
+    Tests --> Build["build_rpm.sh"]
+    Build --> Assets["GitHub Release · RPM + SHA-256"]
+    Assets --> Dispatch["repository_dispatch"]
+    Dispatch --> Pages["pages.yml · createrepo_c"]
+    Pages --> DNF["GitHub Pages · DNF-репозиторий"]
+```
+
+Постоянная ссылка `releases/latest/download/naps3-latest.x86_64.rpm` позволяет
+установить текущую версию одной командой. Подключённый файл `naps3.repo`
+направляет DNF к метаданным Pages, поэтому следующие выпуски приходят через
+обычный `dnf upgrade`.
 
 ## Навигация по основному файлу
 
