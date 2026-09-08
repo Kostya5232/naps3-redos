@@ -24,7 +24,7 @@ jobs:
 
     steps:
       - name: Получить исходный код
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Установить генератор метаданных DNF
         run: |
@@ -79,10 +79,10 @@ jobs:
           EOF
 
       - name: Загрузить сайт репозитория
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: public
 
       - name: Опубликовать DNF-репозиторий
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
