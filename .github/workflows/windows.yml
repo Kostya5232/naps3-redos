@@ -1,0 +1,61 @@
+name: Проверка Windows
+
+on:
+  push:
+    branches:
+      - main
+      - windows-support
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    steps:
+      - name: Получить исходный код
+        uses: actions/checkout@v5
+
+      - name: Установить Python, GTK и Poppler
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gtk3
+            mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-python-gobject
+            mingw-w64-ucrt-x86_64-python-pillow
+            mingw-w64-ucrt-x86_64-poppler
+            mingw-w64-ucrt-x86_64-pyinstaller
+
+      - name: Проверить Python и WIA
+        shell: msys2 {0}
+        run: |
+          python -m py_compile naps3.py windows_backend.py
+          python -m unittest discover -s tests -p 'test_*.py'
+          powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File windows/wia_bridge.ps1 -Action selftest
+
+      - name: Собрать переносимую программу
+        shell: msys2 {0}
+        run: ./windows/build_windows.sh
+
+      - name: Проверить собранную программу
+        shell: pwsh
+        run: .\dist\windows\NAPS3\NAPS3.exe --self-test
+
+      - name: Собрать установщик и ZIP
+        shell: pwsh
+        run: .\windows\build_installer.ps1
+
+      - name: Загрузить Windows-пакет
+        uses: actions/upload-artifact@v6
+        with:
+          name: naps3-windows
+          path: |
+            dist/windows/release/*.exe
+            dist/windows/release/*.zip
+            dist/windows/release/SHA256SUMS.windows
+          if-no-files-found: error

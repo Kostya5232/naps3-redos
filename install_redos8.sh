@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Установка или обновление NAPS3 0.7 на РЕД ОС 8.
+# Установка или обновление NAPS3 на РЕД ОС 8.
 # Запуск: sudo ./install_redos8.sh --user имя_пользователя
 
 set -Eeuo pipefail
@@ -47,7 +47,7 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 for file in \
-    naps3.py naps3.svg naps3.png ipp-usb.conf \
+    naps3.py windows_backend.py naps3.svg naps3.png ipp-usb.conf \
     ipp-usb-naps3 ipp-usb-m428.conf ipp-usb-naps3.service.conf \
     LICENSE.ipp-usb; do
     [[ -f "$SCRIPT_DIR/$file" ]] || {
@@ -135,6 +135,8 @@ sleep 1
 install -d -m 755 /opt/naps3
 install -m 755 "$SCRIPT_DIR/naps3.py" /opt/naps3/naps3.py.new
 mv -f /opt/naps3/naps3.py.new /opt/naps3/naps3.py
+install -m 644 "$SCRIPT_DIR/windows_backend.py" /opt/naps3/windows_backend.py.new
+mv -f /opt/naps3/windows_backend.py.new /opt/naps3/windows_backend.py
 install -m 644 "$SCRIPT_DIR/naps3.png" /opt/naps3/naps3.png
 rm -rf /opt/naps3/__pycache__
 
@@ -235,14 +237,15 @@ if [[ -n "$TARGET_USER" ]] && id "$TARGET_USER" >/dev/null 2>&1; then
     fi
 fi
 
-/usr/bin/python3 -m py_compile /opt/naps3/naps3.py
+/usr/bin/python3 -m py_compile /opt/naps3/naps3.py /opt/naps3/windows_backend.py
 
 INSTALLED_VERSION="$(
     sed -nE 's/^APP_VERSION = "([^"]+)"/\1/p' /opt/naps3/naps3.py |
     head -n 1
 )"
-if [[ "$INSTALLED_VERSION" != "0.7" ]]; then
-    echo "Ошибка проверки: установлена версия '$INSTALLED_VERSION', ожидалась 0.7." >&2
+EXPECTED_VERSION="$(sed -nE 's/^APP_VERSION = "([^"]+)"/\1/p' "$SCRIPT_DIR/naps3.py" | head -n 1)"
+if [[ "$INSTALLED_VERSION" != "$EXPECTED_VERSION" ]]; then
+    echo "Ошибка проверки: установлена версия '$INSTALLED_VERSION', ожидалась $EXPECTED_VERSION." >&2
     exit 1
 fi
 

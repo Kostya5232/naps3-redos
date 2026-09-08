@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
-NAPS3 — графическое USB-сканирование HP для РЕД ОС.
+NAPS3 — графическое сканирование документов для РЕД ОС и Windows.
 
-Версия 0.7:
+Версия 0.8:
+- добавлена Windows-версия с системным backend Windows Image Acquisition;
+- интерфейс, страницы, импорт и защищённое сохранение общие для обеих ОС;
+- Windows-сборка включает GTK 3, Pillow и pdftoppm;
 - интерфейс полностью переведён с Tkinter на GTK 3 / PyGObject;
 - используются системная тема, HeaderBar, стандартные диалоги и значки РЕД ОС;
 - сохранён рабочий backend sane-airscan для HP LaserJet Pro M428f [MFP-YUR];
@@ -50,6 +53,21 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
 
+from windows_backend import (
+    WindowsBackendError,
+    bridge_error_text,
+    build_wia_scan_command,
+    discover_wia_scanners,
+    find_runtime_executable,
+    probe_wia_device,
+    resource_path,
+    run_wia_bridge,
+    windows_creation_flags,
+)
+
+
+IS_WINDOWS = os.name == "nt"
+
 try:
     import gi
 
@@ -61,10 +79,14 @@ try:
 
     from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk
 except (ImportError, ValueError) as exc:
+    dependency_hint = (
+        "Переустановите NAPS3 для Windows."
+        if IS_WINDOWS
+        else "Установите зависимости:\n  sudo dnf install python3-gobject gtk3"
+    )
     print(
         "Не удалось загрузить GTK 3 / PyGObject.\n"
-        "Установите зависимости:\n"
-        "  sudo dnf install python3-gobject gtk3\n\n"
+        f"{dependency_hint}\n\n"
         f"Технические сведения: {exc}",
         file=sys.stderr,
     )
@@ -73,10 +95,14 @@ except (ImportError, ValueError) as exc:
 try:
     from PIL import Image, ImageOps, UnidentifiedImageError
 except ImportError as exc:
+    dependency_hint = (
+        "Переустановите NAPS3 для Windows."
+        if IS_WINDOWS
+        else "Установите пакет:\n  sudo dnf install python3-pillow"
+    )
     print(
         "Не удалось загрузить Pillow.\n"
-        "Установите пакет:\n"
-        "  sudo dnf install python3-pillow\n\n"
+        f"{dependency_hint}\n\n"
         f"Технические сведения: {exc}",
         file=sys.stderr,
     )
@@ -85,14 +111,26 @@ except ImportError as exc:
 
 APP_ID = "ru.redos.NAPS3"
 APP_NAME = "NAPS3"
-APP_VERSION = "0.7"
-DEFAULT_MATCH = "MFP-YUR"
-DEFAULT_SCANNER_NAME = "HP LaserJet Pro M428f [MFP-YUR] (USB)"
+APP_VERSION = "0.8"
+DEFAULT_MATCH = "" if IS_WINDOWS else "MFP-YUR"
+DEFAULT_SCANNER_NAME = (
+    "Сканер Windows"
+    if IS_WINDOWS
+    else "HP LaserJet Pro M428f [MFP-YUR] (USB)"
+)
 DEFAULT_ESCL_URL = "http://127.0.0.1:60000/eSCL"
 PROFILE_KEY = "scanner_profile"
 
-CONFIG_DIR = Path.home() / ".config" / "naps3"
-CACHE_DIR = Path.home() / ".cache" / "naps3"
+if IS_WINDOWS:
+    CONFIG_DIR = Path(
+        os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")
+    ) / "NAPS3"
+    CACHE_DIR = Path(
+        os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")
+    ) / "NAPS3"
+else:
+    CONFIG_DIR = Path.home() / ".config" / "naps3"
+    CACHE_DIR = Path.home() / ".cache" / "naps3"
 CONFIG_FILE = CONFIG_DIR / "settings.json"
 FAST_SANE_DIR = CACHE_DIR / "sane-fast"
 USB_SANE_DIR = CACHE_DIR / "sane-usb-hp"
@@ -382,17 +420,49 @@ def friendly_scan_error(raw: str, cancelled: bool = False) -> str:
 
     if cancelled:
         return "Сканирование отменено пользователем."
-    if "document feeder out of documents" in lower or "no documents" in lower:
+    if (
+        "document feeder out of documents" in lower
+        or "no documents" in lower
+        or "0x80210003" in lower
+        or "нет документов" in lower
+    ):
         return (
             "В автоподатчике нет документов. Положите листы в лоток до "
             "срабатывания датчика и повторите сканирование."
         )
-    if "device busy" in lower or "resource busy" in lower:
+    if (
+        "device busy" in lower
+        or "resource busy" in lower
+        or "0x80210006" in lower
+    ):
         return (
-            "Сканер занят другой программой. Закройте NAPS2, Simple Scan и "
-            "другие программы сканирования, затем повторите попытку."
+            "Сканер занят другой программой. Закройте другие программы "
+            "сканирования, затем повторите попытку."
+        )
+    if "0x80210002" in lower or "paper jam" in lower:
+        return "В автоподатчике замята бумага. Устраните замятие и повторите сканирование."
+    if "0x80210020" in lower or "multi-feed" in lower:
+        return "Сканер обнаружил подачу нескольких листов. Проверьте стопку бумаги."
+    if "0x80210007" in lower or "warming up" in lower:
+        return "Сканер ещё прогревается. Подождите несколько секунд и повторите операцию."
+    if (
+        "0x80210005" in lower
+        or "0x80210008" in lower
+        or "0x8021000a" in lower
+        or "0x8021000d" in lower
+        or "0x80210015" in lower
+        or "offline" in lower
+    ):
+        return (
+            "Выбранный сканер не отвечает Windows. Разбудите МФУ, проверьте "
+            "кабель и установленный WIA-драйвер, затем повторите операцию."
         )
     if "permission denied" in lower or "access denied" in lower:
+        if IS_WINDOWS:
+            return (
+                "Нет доступа к сканеру Windows. Закройте другие программы "
+                "сканирования или обратитесь к администратору."
+            )
         return (
             "Нет доступа к сканеру. Переподключите USB-кабель, перезапустите "
             "службу ipp-usb или обратитесь к администратору."
@@ -429,10 +499,10 @@ def friendly_scan_error(raw: str, cancelled: bool = False) -> str:
     if not details:
         return (
             "Сканер не передал ни одной страницы. Проверьте наличие бумаги "
-            "в автоподатчике и подключение USB."
+            "в автоподатчике и подключение."
         )
     return (
-        "Не удалось завершить сканирование. Проверьте бумагу, USB-подключение "
+        "Не удалось завершить сканирование. Проверьте бумагу, подключение "
         "и питание МФУ.\n\n"
         f"Технические сведения: {details}"
     )
@@ -1065,6 +1135,12 @@ def discover_usb_scanners(
     Compatibility path: HP HPLIP hpaio:/usb backend, needed by models such
     as LaserJet MFP M227/M231 when they do not expose USB scanning via eSCL.
     """
+    if IS_WINDOWS:
+        try:
+            return discover_wia_scanners(match_filter)
+        except WindowsBackendError as exc:
+            raise Naps3Error(str(exc)) from exc
+
     profiles: list[dict[str, object]] = []
 
     url = discover_loopback_escl_url(match_filter)
@@ -1186,6 +1262,11 @@ def usb_diagnostic_text() -> str:
 
 
 def discover_network_scanners() -> list[dict[str, str]]:
+    # Automatic sane-airscan discovery is Linux-specific. Windows users can
+    # still add any eSCL scanner by its IP address in the same dialog.
+    if IS_WINDOWS:
+        return []
+
     output = list_backend_devices(
         ["airscan"],
         12.0,
@@ -1505,6 +1586,9 @@ def discover_loopback_escl_url(
 def default_profile_if_available(
     match_filter: str = "",
 ) -> Optional[dict[str, object]]:
+    if IS_WINDOWS:
+        return None
+
     url = discover_loopback_escl_url(match_filter)
     if not url:
         return None
@@ -1765,6 +1849,12 @@ def discover_scanner_profile(
                 "profile_source": "network-airscan",
             }
 
+    if IS_WINDOWS:
+        raise Naps3Error(
+            "Сканер Windows не найден. Убедитесь, что МФУ включено и "
+            "подключено, затем установите WIA-драйвер производителя."
+        )
+
     diagnostic = usb_diagnostic_text()
     message = (
         "Локальный USB-сканер не найден. Для HP LaserJet M227/M231 "
@@ -1972,7 +2062,11 @@ class USBScannerDialog(Gtk.Dialog):
         profiles: list[dict[str, object]],
     ) -> None:
         super().__init__(
-            title="Подключение USB-сканера",
+            title=(
+                "Подключение сканера Windows"
+                if IS_WINDOWS
+                else "Подключение USB-сканера"
+            ),
             transient_for=parent,
             modal=True,
         )
@@ -1987,15 +2081,24 @@ class USBScannerDialog(Gtk.Dialog):
         area.set_border_width(18)
 
         title = Gtk.Label()
-        title.set_markup("<b>Выберите локальный USB-сканер</b>")
+        title.set_markup(
+            "<b>Выберите сканер Windows</b>"
+            if IS_WINDOWS
+            else "<b>Выберите локальный USB-сканер</b>"
+        )
         title.set_xalign(0)
         area.pack_start(title, False, False, 0)
 
         info = Gtk.Label(
             label=(
-                "NAPS3 проверяет два способа: driverless ipp-usb/eSCL и "
-                "драйвер HP HPLIP (hpaio). Сетевые устройства в этот список "
-                "не включаются."
+                "NAPS3 показывает сканеры, установленные в Windows через "
+                "системный интерфейс WIA."
+                if IS_WINDOWS
+                else (
+                    "NAPS3 проверяет два способа: driverless ipp-usb/eSCL и "
+                    "драйвер HP HPLIP (hpaio). Сетевые устройства в этот список "
+                    "не включаются."
+                )
             )
         )
         info.set_xalign(0)
@@ -2006,9 +2109,13 @@ class USBScannerDialog(Gtk.Dialog):
         self.combo = Gtk.ComboBoxText()
         for index, profile in enumerate(profiles):
             backend = (
-                "HPLIP / hpaio"
-                if profile.get("connection_kind") == "usb-hpaio"
-                else "ipp-usb / eSCL"
+                "Windows WIA"
+                if profile.get("connection_kind") == "windows-wia"
+                else (
+                    "HPLIP / hpaio"
+                    if profile.get("connection_kind") == "usb-hpaio"
+                    else "ipp-usb / eSCL"
+                )
             )
             self.combo.append(
                 str(index),
@@ -2020,8 +2127,13 @@ class USBScannerDialog(Gtk.Dialog):
 
         note = Gtk.Label(
             label=(
-                "Если список пуст, установщик версии 0.4.1 добавит HPLIP. "
-                "После установки переподключите USB-кабель."
+                "Если устройства нет в списке, установите WIA-драйвер с сайта "
+                "производителя МФУ и переподключите USB-кабель."
+                if IS_WINDOWS
+                else (
+                    "Если список пуст, установщик версии 0.4.1 добавит HPLIP. "
+                    "После установки переподключите USB-кабель."
+                )
             )
         )
         note.set_xalign(0)
@@ -2190,7 +2302,11 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self.set_default_size(1280, 800)
         self.set_size_request(980, 640)
-        self.set_icon_name("naps3")
+        windows_icon = resource_path("naps3.png")
+        if IS_WINDOWS and windows_icon.is_file():
+            self.set_icon_from_file(str(windows_icon))
+        else:
+            self.set_icon_name("naps3")
 
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -3505,11 +3621,10 @@ class MainWindow(Gtk.ApplicationWindow):
         connection_kind = str(
             profile.get("connection_kind") or "usb"
         )
-        connection_caption = (
-            "Сеть"
-            if connection_kind == "network"
-            else "USB"
-        )
+        connection_caption = {
+            "network": "Сеть",
+            "windows-wia": "Windows",
+        }.get(connection_kind, "USB")
         model_suffix = connection_caption
 
         bracket_match = re.search(r"\[([^\]]+)\]", name)
@@ -3541,6 +3656,13 @@ class MainWindow(Gtk.ApplicationWindow):
             )
             self.device_address_label.set_text(
                 network_ip or "Сетевой адрес определяется автоматически"
+            )
+        elif connection_kind == "windows-wia":
+            self.device_connection_label.set_text(
+                "Системный драйвер Windows Image Acquisition (WIA)"
+            )
+            self.device_address_label.set_text(
+                str(profile.get("port") or "Устройство зарегистрировано в Windows")
             )
         elif connection_kind == "usb-hpaio":
             self.device_connection_label.set_text(
@@ -3580,7 +3702,11 @@ class MainWindow(Gtk.ApplicationWindow):
         if self.scanner_profile:
             self._show_profile(
                 self.scanner_profile,
-                "Сохранённый USB-профиль загружен",
+                (
+                    "Сохранённый профиль Windows загружен"
+                    if self.scanner_profile.get("backend") == "wia"
+                    else "Сохранённый USB-профиль загружен"
+                ),
             )
             self._probe_saved_profile_async()
             return
@@ -3588,9 +3714,17 @@ class MainWindow(Gtk.ApplicationWindow):
         self._set_device_status(
             "checking",
             "Проверка",
-            "Проверяется локальное USB-подключение…",
+            (
+                "Проверяются сканеры Windows WIA…"
+                if IS_WINDOWS
+                else "Проверяется локальное USB-подключение…"
+            ),
         )
-        self.set_status("Проверка локального USB-подключения…")
+        self.set_status(
+            "Проверка сканеров Windows WIA…"
+            if IS_WINDOWS
+            else "Проверка локального USB-подключения…"
+        )
         match_filter = self.match_entry.get_text().strip()
 
         def worker() -> None:
@@ -3602,7 +3736,11 @@ class MainWindow(Gtk.ApplicationWindow):
                     self._profile_ready,
                     profile,
                     "",
-                    "USB-профиль создан для этого ПК.",
+                    (
+                        "Профиль WIA создан для этого компьютера."
+                        if IS_WINDOWS
+                        else "USB-профиль создан для этого ПК."
+                    ),
                 )
             except Exception as exc:  # noqa: BLE001
                 GLib.idle_add(
@@ -3632,7 +3770,13 @@ class MainWindow(Gtk.ApplicationWindow):
                 # another MFP while the selected one is asleep or disconnected.
                 url = profile_url(profile)
                 device_id = str(profile.get("device_id") or "")
-                if url:
+                if profile.get("backend") == "wia":
+                    if not device_id or not probe_wia_device(device_id):
+                        raise Naps3Error(
+                            "Выбранный сканер больше не зарегистрирован в "
+                            "Windows. Проверьте подключение или выберите его заново."
+                        )
+                elif url:
                     if not probe_escl_url(url):
                         raise Naps3Error(
                             "Выбранный сканер не отвечает. Разбудите МФУ и "
@@ -3792,11 +3936,20 @@ class MainWindow(Gtk.ApplicationWindow):
     def connect_usb_scanner(self) -> None:
         if self.is_busy:
             return
-        self.set_busy(True, "Поиск локального USB-сканера…")
+        self.set_busy(
+            True,
+            "Поиск сканеров Windows WIA…"
+            if IS_WINDOWS
+            else "Поиск локального USB-сканера…",
+        )
         self._set_device_status(
             "checking",
-            "USB",
-            "Проверяются ipp-usb/eSCL и HP HPLIP (hpaio)…",
+            "Windows" if IS_WINDOWS else "USB",
+            (
+                "Читается список установленных устройств WIA…"
+                if IS_WINDOWS
+                else "Проверяются ipp-usb/eSCL и HP HPLIP (hpaio)…"
+            ),
         )
         match_filter = self.match_entry.get_text().strip()
 
@@ -3808,7 +3961,10 @@ class MainWindow(Gtk.ApplicationWindow):
                 GLib.idle_add(
                     self._usb_scanners_ready,
                     [],
-                    friendly_general_error(exc, "найти USB-сканер"),
+                    friendly_general_error(
+                        exc,
+                        "найти сканер Windows" if IS_WINDOWS else "найти USB-сканер",
+                    ),
                 )
 
         threading.Thread(target=worker, daemon=True).start()
@@ -3821,20 +3977,33 @@ class MainWindow(Gtk.ApplicationWindow):
         self.set_busy(False)
         if error:
             self._set_device_status("error", "Ошибка", error)
-            self.show_error("Ошибка USB-подключения", error)
+            self.show_error(
+                "Ошибка подключения Windows" if IS_WINDOWS else "Ошибка USB-подключения",
+                error,
+            )
             return False
         if not profiles:
-            diagnostic = usb_diagnostic_text()
+            diagnostic = "" if IS_WINDOWS else usb_diagnostic_text()
             message = (
-                "Физически подключённый USB-сканер не найден. Убедитесь, "
-                "что МФУ включено и кабель подключён к этому компьютеру. "
-                "Для HP M227/M231 требуется пакет HPLIP/hpaio."
+                "Сканер Windows не найден. Убедитесь, что МФУ включено и "
+                "подключено, затем установите WIA-драйвер производителя."
+                if IS_WINDOWS
+                else (
+                    "Физически подключённый USB-сканер не найден. Убедитесь, "
+                    "что МФУ включено и кабель подключён к этому компьютеру. "
+                    "Для HP M227/M231 требуется пакет HPLIP/hpaio."
+                )
             )
             if diagnostic:
                 message += f"\n\nДиагностика: {diagnostic}"
             self._set_device_status("error", "Не найден", message)
-            self.show_error("USB-сканер не найден", message)
-            self.set_status("USB-сканер не найден")
+            self.show_error(
+                "Сканер Windows не найден" if IS_WINDOWS else "USB-сканер не найден",
+                message,
+            )
+            self.set_status(
+                "Сканер Windows не найден" if IS_WINDOWS else "USB-сканер не найден"
+            )
             return False
 
         if len(profiles) == 1:
@@ -3845,7 +4014,11 @@ class MainWindow(Gtk.ApplicationWindow):
             profile = dialog.get_profile()
             dialog.destroy()
             if response != Gtk.ResponseType.OK or not profile:
-                self.set_status("Подключение по USB отменено")
+                self.set_status(
+                    "Выбор сканера отменён"
+                    if IS_WINDOWS
+                    else "Подключение по USB отменено"
+                )
                 return False
 
         self.scanner_profile = profile
@@ -3853,9 +4026,13 @@ class MainWindow(Gtk.ApplicationWindow):
         self._set_device_profile(
             profile,
             (
-                "USB-сканер подключён через HPLIP (hpaio)."
-                if profile.get("connection_kind") == "usb-hpaio"
-                else "USB-сканер подключён через ipp-usb/eSCL."
+                "Сканер подключён через Windows WIA."
+                if profile.get("backend") == "wia"
+                else (
+                    "USB-сканер подключён через HPLIP (hpaio)."
+                    if profile.get("connection_kind") == "usb-hpaio"
+                    else "USB-сканер подключён через ipp-usb/eSCL."
+                )
             ),
             "ready",
         )
@@ -3863,7 +4040,11 @@ class MainWindow(Gtk.ApplicationWindow):
             self._save_ui_settings()
         except OSError:
             pass
-        self.set_status("USB-сканер подключён")
+        self.set_status(
+            "Сканер Windows подключён"
+            if profile.get("backend") == "wia"
+            else "USB-сканер подключён"
+        )
         return False
 
     def connect_network_scanner(self) -> None:
@@ -3965,7 +4146,7 @@ class MainWindow(Gtk.ApplicationWindow):
         if self.is_busy:
             return
 
-        if shutil.which("scanimage") is None:
+        if not IS_WINDOWS and shutil.which("scanimage") is None:
             self.show_error(
                 "Не удаётся начать сканирование",
                 "Не установлен компонент scanimage. "
@@ -4204,8 +4385,132 @@ class MainWindow(Gtk.ApplicationWindow):
                 "open of device",
                 "failed to open",
                 "device not found",
+                "0x80210003",  # WIA_ERROR_PAPER_EMPTY
+                "0x80210005",  # WIA_ERROR_OFFLINE
+                "0x80210006",  # WIA_ERROR_BUSY
+                "0x80210007",  # WIA_ERROR_WARMING_UP
+                "0x80210008",  # WIA_ERROR_USER_INTERVENTION
+                "0x8021000a",  # WIA_ERROR_DEVICE_COMMUNICATION
+                "0x8021000d",  # WIA_ERROR_DEVICE_LOCKED
+                "0x80210015",  # WIA_S_NO_DEVICE_AVAILABLE
             )
         )
+
+    def _scan_windows_wia(
+        self,
+        scan_dir: Path,
+        profile: dict[str, object],
+        source: str,
+        mode: str,
+        dpi: int,
+        paper: str,
+    ) -> tuple[list[Path], str, dict[str, object]]:
+        """Scan the exact selected Windows device through the bundled WIA bridge."""
+        device_id = str(profile.get("device_id") or "").strip()
+        if not device_id:
+            return [], "В профиле WIA нет идентификатора устройства.", profile
+
+        for pattern in ("page-*", "raw-*"):
+            for old_file in scan_dir.glob(pattern):
+                old_file.unlink(missing_ok=True)
+
+        command = build_wia_scan_command(
+            device_id,
+            scan_dir,
+            source,
+            mode,
+            dpi,
+            paper,
+        )
+        GLib.idle_add(
+            self._set_device_profile,
+            profile,
+            "Соединение WIA установлено. Идёт сканирование…",
+            "ready",
+        )
+        GLib.idle_add(
+            self.set_status,
+            (
+                "Сканирование со стекла через Windows WIA…"
+                if source == "Flatbed"
+                else "Сканирование всех листов из автоподатчика через Windows WIA…"
+            ),
+        )
+        append_scan_log(
+            f"WIA engine device={device_id} source={source} dpi={dpi} mode={mode}"
+        )
+
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=windows_creation_flags(),
+            )
+        except OSError as exc:
+            return [], f"Не удалось запустить Windows WIA: {exc}", profile
+
+        self.current_process = process
+        try:
+            stdout, stderr = process.communicate()
+        finally:
+            if self.current_process is process:
+                self.current_process = None
+
+        raw_files = sorted(
+            path
+            for path in scan_dir.glob("raw-*.bmp")
+            if path.is_file() and path.stat().st_size > 0
+        )
+        if self.cancel_requested:
+            for raw_file in raw_files:
+                raw_file.unlink(missing_ok=True)
+            raise Naps3Error("Сканирование отменено пользователем.")
+
+        if not raw_files:
+            error = bridge_error_text(stdout, stderr)
+            append_scan_log(f"WIA scan failed: {compact_details(error, 600)}")
+            return [], error, profile
+
+        GLib.idle_add(
+            self.set_status,
+            f"Получено страниц: {len(raw_files)}. Подготовка предпросмотра…",
+        )
+        targets = [
+            scan_dir / f"page-{index:04d}.png"
+            for index in range(1, len(raw_files) + 1)
+        ]
+        workers = min(3, max(1, len(raw_files)))
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=workers
+        ) as executor:
+            futures = [
+                executor.submit(
+                    self._convert_stream_document,
+                    raw,
+                    target,
+                    mode == "Lineart",
+                )
+                for raw, target in zip(raw_files, targets)
+            ]
+            files = [future.result() for future in futures]
+
+        for raw_file in raw_files:
+            raw_file.unlink(missing_ok=True)
+
+        if process.returncode != 0:
+            append_scan_log(
+                "WIA preserved partial pages after backend error: "
+                f"{compact_details(bridge_error_text(stdout, stderr), 600)}"
+            )
+        append_scan_log(f"WIA scan complete pages={len(files)}")
+        updated = dict(profile)
+        updated["scan_engine"] = "windows-wia-v1"
+        updated["saved_at"] = int(time.time())
+        return files, "", updated
 
     def _scan_once(
         self,
@@ -4914,6 +5219,54 @@ class MainWindow(Gtk.ApplicationWindow):
                 "нет адреса устройства. Выберите этот сканер заново."
             )
 
+        if profile.get("backend") == "wia":
+            error = ""
+            for attempt in range(2):
+                try:
+                    files, error, profile = self._scan_windows_wia(
+                        scan_dir,
+                        profile,
+                        source,
+                        mode,
+                        dpi,
+                        paper,
+                    )
+                except WindowsBackendError as exc:
+                    files, error = [], str(exc)
+                if files:
+                    return files, profile
+                if self.cancel_requested:
+                    raise Naps3Error("Сканирование отменено пользователем.")
+                if attempt == 0 and self._retryable_device_error(error):
+                    GLib.idle_add(
+                        self.set_status,
+                        "МФУ пробуждается; повтор WIA на выбранном устройстве…",
+                    )
+                    append_scan_log(
+                        "WIA retry for exact selected device after: "
+                        f"{compact_details(error, 600)}"
+                    )
+                    time.sleep(2.0)
+                    continue
+                break
+            raise Naps3Error(friendly_scan_error(error, self.cancel_requested))
+
+        if (
+            IS_WINDOWS
+            and str(profile.get("connection_kind") or "") == "network"
+            and profile_scan_url(profile)
+        ):
+            # Windows packages do not include SANE. Direct eSCL keeps manual
+            # network profiles working for both platen and feeder scans.
+            return self._scan_direct_escl(
+                scan_dir,
+                profile,
+                source,
+                mode,
+                dpi,
+                paper,
+            )
+
         if stream_adf and source != "Flatbed":
             direct_url = profile_scan_url(profile)
             connection_kind = str(
@@ -5440,11 +5793,15 @@ class MainWindow(Gtk.ApplicationWindow):
         if self.is_busy:
             return
 
-        if shutil.which("pdftoppm") is None:
+        pdf_converter = find_runtime_executable("pdftoppm")
+        if pdf_converter is None:
             self.show_error(
                 "Импорт PDF недоступен",
-                "Не установлен компонент pdftoppm. "
-                "Установите пакет poppler-utils.",
+                (
+                    "Переустановите NAPS3 для Windows: в пакете отсутствует pdftoppm."
+                    if IS_WINDOWS
+                    else "Не установлен компонент pdftoppm. Установите пакет poppler-utils."
+                ),
             )
             return
 
@@ -5477,12 +5834,18 @@ class MainWindow(Gtk.ApplicationWindow):
         prefix = import_dir / "page"
 
         self.set_busy(True, "Импорт PDF…")
+        converter_env = None
+        if IS_WINDOWS:
+            converter_env = {
+                **os.environ,
+                "FONTCONFIG_PATH": str(resource_path("etc", "fonts")),
+            }
 
         def worker() -> None:
             try:
                 result = subprocess.run(
                     [
-                        "pdftoppm",
+                        pdf_converter,
                         "-png",
                         "-r",
                         "160",
@@ -5496,6 +5859,7 @@ class MainWindow(Gtk.ApplicationWindow):
                     stderr=subprocess.PIPE,
                     timeout=300,
                     check=False,
+                    env=converter_env,
                 )
                 files = sorted(import_dir.glob("page-*.png"))
                 if not files:
@@ -5987,11 +6351,20 @@ class MainWindow(Gtk.ApplicationWindow):
             "Сохранение завершено",
             f"{message}\n\n{path}\n\nОткрыть {object_name}?",
         ):
-            subprocess.Popen(
-                ["xdg-open", str(path)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            try:
+                if IS_WINDOWS:
+                    os.startfile(str(path))
+                else:
+                    subprocess.Popen(
+                        ["xdg-open", str(path)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+            except OSError as exc:
+                self.show_error(
+                    "Не удалось открыть результат",
+                    friendly_general_error(exc, "открыть сохранённый результат"),
+                )
 
         return False
 
@@ -6109,7 +6482,16 @@ class Naps3Application(Gtk.Application):
 def check_runtime() -> Optional[str]:
     missing: list[str] = []
 
-    if shutil.which("scanimage") is None:
+    if IS_WINDOWS:
+        try:
+            result = run_wia_bridge("selftest", timeout=8.0)
+            if not isinstance(result, dict) or not result.get("ok"):
+                missing.append("компонент Windows WIA")
+        except WindowsBackendError as exc:
+            missing.append(f"компонент Windows WIA ({exc})")
+        if find_runtime_executable("pdftoppm") is None:
+            missing.append("pdftoppm для импорта PDF")
+    elif shutil.which("scanimage") is None:
         missing.append("scanimage из пакета sane-backends")
 
     if missing:
@@ -6125,6 +6507,10 @@ def main() -> int:
     if runtime_error:
         print(runtime_error, file=sys.stderr)
         return 2
+
+    if "--self-test" in sys.argv:
+        print(f"NAPS3 {APP_VERSION}: runtime OK")
+        return 0
 
     app = Naps3Application()
     return app.run(sys.argv)
