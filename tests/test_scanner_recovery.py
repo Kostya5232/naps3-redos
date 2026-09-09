@@ -286,8 +286,10 @@ class StartupProfileTests(PatchedTestCase):
         self.owner.scanner_profile = legacy
         self.probe.return_value = False
 
-        naps3.MainWindow._probe_saved_profile_async(self.owner)
-        self.finish_probe()
+        # The legacy automatic profile existed only in Linux releases.
+        with mock.patch.object(naps3, "IS_WINDOWS", False):
+            naps3.MainWindow._probe_saved_profile_async(self.owner)
+            self.finish_probe()
 
         self.assertIsNone(self.owner.scanner_profile)
         self.assertEqual(self.owner._set_device_profile.call_args.args[0], {})
