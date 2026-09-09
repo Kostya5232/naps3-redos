@@ -13,6 +13,8 @@ SOURCE="$SCRIPT_DIR/naps3.py"
 [[ -s "$SOURCE" ]] || { echo "Не найден $SOURCE" >&2; exit 1; }
 BACKEND_SOURCE="$SCRIPT_DIR/windows_backend.py"
 [[ -s "$BACKEND_SOURCE" ]] || { echo "Не найден $BACKEND_SOURCE" >&2; exit 1; }
+UDEV_RULE_SOURCE="$SCRIPT_DIR/packaging/60-naps3-scanners.rules"
+[[ -s "$UDEV_RULE_SOURCE" ]] || { echo "Не найден $UDEV_RULE_SOURCE" >&2; exit 1; }
 
 VERSION="$(sed -nE 's/^APP_VERSION = "([^"]+)"/\1/p' "$SOURCE" | head -n 1)"
 [[ -n "$VERSION" ]] || { echo "Не удалось определить версию." >&2; exit 1; }
@@ -52,6 +54,13 @@ if ! /usr/bin/python3 -m py_compile "$TARGET" "$BACKEND_TARGET"; then
     fi
     exit 1
 fi
+
+install -d -m 0755 /etc/udev/rules.d
+install -m 0644 "$UDEV_RULE_SOURCE" /etc/udev/rules.d/60-naps3-scanners.rules
+udevadm control --reload-rules 2>/dev/null || true
+udevadm trigger --action=add --subsystem-match=usb \
+    --attr-match=idVendor=04a9 --attr-match=idProduct=2737 \
+    2>/dev/null || true
 
 INSTALLED_VERSION="$(sed -nE 's/^APP_VERSION = "([^"]+)"/\1/p' "$TARGET" | head -n 1)"
 [[ "$INSTALLED_VERSION" == "$VERSION" ]] || {

@@ -23,7 +23,8 @@ for file in \
     ipp-usb-m428.conf LICENSE LICENSE.ipp-usb README.txt RPM_INSTALL.txt \
     packaging/naps3.spec packaging/naps3-launcher \
     packaging/ru.redos.NAPS3.desktop \
-    packaging/ipp-usb-naps3-rpm.service.conf; do
+    packaging/ipp-usb-naps3-rpm.service.conf \
+    packaging/60-naps3-scanners.rules; do
     [[ -s "$SCRIPT_DIR/$file" ]] || {
         echo "Отсутствует файл пакета: $file" >&2
         exit 1
@@ -90,7 +91,7 @@ chmod 0755 "$SOURCE_DIR/naps3.py" "$SOURCE_DIR/ipp-usb-naps3"
 
 for file in \
     naps3-launcher ru.redos.NAPS3.desktop \
-    ipp-usb-naps3-rpm.service.conf; do
+    ipp-usb-naps3-rpm.service.conf 60-naps3-scanners.rules; do
     install -m 0644 \
         "$SCRIPT_DIR/packaging/$file" \
         "$SOURCE_DIR/packaging/$file"
