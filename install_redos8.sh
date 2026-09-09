@@ -49,7 +49,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 for file in \
     naps3.py windows_backend.py naps3.svg naps3.png ipp-usb.conf \
     ipp-usb-naps3 ipp-usb-m428.conf ipp-usb-naps3.service.conf \
-    LICENSE.ipp-usb; do
+    packaging/60-naps3-scanners.rules LICENSE.ipp-usb; do
     [[ -f "$SCRIPT_DIR/$file" ]] || {
         echo "В папке установщика отсутствует файл: $file" >&2
         exit 1
@@ -94,6 +94,7 @@ install_first_available python3-gobject pygobject3
 install_first_available gtk3
 install_first_available python3-pillow python3-Pillow
 install_first_available sane-backends
+install_optional_first_available sane-backends-drivers-scanners sane-backends
 install_first_available sane-airscan
 install_first_available ipp-usb
 install_optional_first_available hplip hplip-common
@@ -127,6 +128,17 @@ install -m 644 \
 systemctl unmask ipp-usb.service 2>/dev/null || true
 systemctl daemon-reload
 systemctl restart ipp-usb.service 2>/dev/null || true
+
+# Canon MF4410 uses the SANE pixma backend. Grant the active desktop user
+# access to its USB device and apply the rule to an already connected scanner.
+install -d -m 755 /etc/udev/rules.d
+install -m 644 \
+    "$SCRIPT_DIR/packaging/60-naps3-scanners.rules" \
+    /etc/udev/rules.d/60-naps3-scanners.rules
+udevadm control --reload-rules 2>/dev/null || true
+udevadm trigger --action=add --subsystem-match=usb \
+    --attr-match=idVendor=04a9 --attr-match=idProduct=2737 \
+    2>/dev/null || true
 
 echo "Остановка запущенной старой версии NAPS3…"
 pkill -f '/opt/naps3/naps3.py' 2>/dev/null || true
@@ -191,14 +203,14 @@ Type=Application
 Version=1.0
 Name=NAPS3
 GenericName=Сканирование документов
-Comment=Многостраничное USB-сканирование HP и сохранение PDF/изображений
+Comment=Многостраничное сканирование и сохранение PDF/изображений
 Exec=/usr/local/bin/naps3
 Icon=naps3
 Terminal=false
 StartupWMClass=NAPS3
 DBusActivatable=false
 Categories=Graphics;Scanning;
-Keywords=сканер;сканирование;PDF;изображения;HP;ADF;
+Keywords=сканер;сканирование;PDF;изображения;ADF;
 StartupNotify=true
 EOF
 
@@ -256,7 +268,7 @@ cmp -s "$SCRIPT_DIR/ipp-usb-naps3" /opt/naps3/ipp-usb-naps3 || {
 
 echo
 echo "NAPS3 $INSTALLED_VERSION установлен или обновлён."
-echo "USB M428/M429 больше не ждёт 10 мс после каждого 8-КиБ блока страницы."
+echo "Доступны ipp-usb/eSCL и локальные SANE-драйверы, включая Canon pixma."
 echo
 echo "Полностью закройте старое окно NAPS3 и запустите приложение снова:"
 echo "  naps3"

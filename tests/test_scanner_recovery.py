@@ -276,6 +276,31 @@ class StartupProfileTests(PatchedTestCase):
         self.owner._save_ui_settings.assert_not_called()
         self.assertEqual(self.owner._set_device_profile.call_args.args[2], "error")
 
+    def test_unavailable_legacy_hp_default_is_cleared(self):
+        legacy = {
+            "name": "HP LaserJet Pro M428f [MFP-YUR] (USB)",
+            "url": "http://127.0.0.1:60000/eSCL",
+            "connection_kind": "usb",
+            "profile_source": "loopback",
+        }
+        self.owner.scanner_profile = legacy
+        self.probe.return_value = False
+
+        # The legacy automatic profile existed only in Linux releases.
+        with mock.patch.object(naps3, "IS_WINDOWS", False):
+            naps3.MainWindow._probe_saved_profile_async(self.owner)
+            self.finish_probe()
+
+        self.assertIsNone(self.owner.scanner_profile)
+        self.assertEqual(self.owner._set_device_profile.call_args.args[0], {})
+        self.owner._save_ui_settings.assert_called_once()
+        self.assertEqual(
+            self.owner.set_status.call_args.args[0],
+            "Сканер не выбран",
+        )
+        self.discovery.assert_not_called()
+        self.usb_discovery.assert_not_called()
+
     def test_saved_network_scanner_keeps_priority_over_unrelated_usb_device(self):
         selected = {
             **self.selected, "url": "http://192.0.2.20:80/eSCL",

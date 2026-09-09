@@ -84,6 +84,80 @@ class EsclParsingTests(unittest.TestCase):
         self.assertIn("отменено", naps3.friendly_scan_error("", True))
 
 
+class LocalScannerDiscoveryTests(unittest.TestCase):
+    def test_legacy_hp_filter_is_removed(self) -> None:
+        self.assertEqual(naps3.normalized_match_filter("MFP-YUR"), "")
+        self.assertEqual(
+            naps3.normalized_match_filter("Canon MF4410"),
+            "Canon MF4410",
+        )
+
+    def test_pixma_source_names_are_preserved(self) -> None:
+        capabilities = naps3.parse_sane_source_capabilities(
+            "  --source Flatbed|Automatic Document Feeder [Flatbed]\n"
+        )
+        self.assertTrue(capabilities["has_adf"])
+        self.assertFalse(capabilities["supports_duplex"])
+        self.assertEqual(
+            capabilities["source_map"],
+            {
+                "Flatbed": "Flatbed",
+                "ADF": "Automatic Document Feeder",
+            },
+        )
+
+    def test_canon_pixma_profile_uses_exact_sane_source(self) -> None:
+        profile = naps3.build_sane_profile(
+            {
+                "id": "pixma:04A92737_000000000000",
+                "name": "CANON Canon imageCLASS MF4410 multi-function peripheral",
+            },
+            "  --source Flatbed|Automatic Document Feeder [Flatbed]\n",
+        )
+        self.assertEqual(profile["backend"], "pixma")
+        self.assertEqual(profile["connection_kind"], "usb-sane")
+        self.assertEqual(
+            naps3.sane_source_for_profile(profile, "ADF"),
+            "Automatic Document Feeder",
+        )
+
+    def test_linux_discovery_includes_accessible_pixma_device(self) -> None:
+        listing = (
+            "device `pixma:04A92737_000000000000' is a CANON Canon "
+            "imageCLASS MF4410 multi-function peripheral\n"
+        )
+        help_output = (
+            b"  --source Flatbed|Automatic Document Feeder [Flatbed]\n"
+        )
+        result = SimpleNamespace(returncode=0, stdout=help_output)
+        with mock.patch.object(naps3, "IS_WINDOWS", False), mock.patch.object(
+            naps3, "discover_loopback_escl_url", return_value=""
+        ), mock.patch.object(
+            naps3, "list_system_sane_devices", return_value=listing
+        ), mock.patch.object(
+            naps3, "list_backend_devices", return_value=""
+        ), mock.patch.object(naps3.subprocess, "run", return_value=result):
+            profiles = naps3.discover_usb_scanners()
+
+        self.assertEqual(len(profiles), 1)
+        self.assertEqual(profiles[0]["backend"], "pixma")
+        self.assertEqual(
+            profiles[0]["device_id"],
+            "pixma:04A92737_000000000000",
+        )
+
+    def test_multiple_devices_do_not_prefer_hp(self) -> None:
+        profiles = [
+            {"name": "Canon MF4410"},
+            {"name": "HP LaserJet Pro M428f"},
+        ]
+        self.assertIsNone(naps3.choose_usb_profile(profiles, ""))
+        self.assertIs(
+            naps3.choose_usb_profile(profiles, "Canon"),
+            profiles[0],
+        )
+
+
 class ImageProjectTests(unittest.TestCase):
     def test_atomic_180_rotation_changes_corners(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

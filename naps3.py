@@ -8,7 +8,8 @@ NAPS3 — графическое сканирование документов �
 - Windows-сборка включает GTK 3, Pillow и pdftoppm;
 - интерфейс полностью переведён с Tkinter на GTK 3 / PyGObject;
 - используются системная тема, HeaderBar, стандартные диалоги и значки РЕД ОС;
-- сохранён рабочий backend sane-airscan для HP LaserJet Pro M428f [MFP-YUR];
+- сохранён рабочий backend sane-airscan для принтеров с eSCL/IPP-over-USB;
+- локальные Linux-сканеры обнаруживаются через установленные SANE-backend'ы;
 - USB M428/M429 переведён с нерабочего hpaio на ipp-usb/eSCL;
 - сломанные hpaio-профили больше не показываются как рабочие;
 - ручной дуплекс показывается только для одностороннего АПД;
@@ -111,15 +112,12 @@ except ImportError as exc:
 
 APP_ID = "ru.redos.NAPS3"
 APP_NAME = "NAPS3"
-APP_VERSION = "0.8"
-DEFAULT_MATCH = "" if IS_WINDOWS else "MFP-YUR"
-DEFAULT_SCANNER_NAME = (
-    "Сканер Windows"
-    if IS_WINDOWS
-    else "HP LaserJet Pro M428f [MFP-YUR] (USB)"
-)
+APP_VERSION = "0.8.1"
+DEFAULT_MATCH = ""
+DEFAULT_SCANNER_NAME = "Сканер Windows" if IS_WINDOWS else "Сканер"
 DEFAULT_ESCL_URL = "http://127.0.0.1:60000/eSCL"
 PROFILE_KEY = "scanner_profile"
+LEGACY_DEFAULT_MATCHES = {"mfp-yur"}
 
 if IS_WINDOWS:
     CONFIG_DIR = Path(
@@ -464,8 +462,9 @@ def friendly_scan_error(raw: str, cancelled: bool = False) -> str:
                 "сканирования или обратитесь к администратору."
             )
         return (
-            "Нет доступа к сканеру. Переподключите USB-кабель, перезапустите "
-            "службу ipp-usb или обратитесь к администратору."
+            "Нет доступа к USB-сканеру. Переподключите кабель после установки "
+            "последней версии NAPS3. Если ошибка сохранится, проверьте правила "
+            "udev для этого устройства или обратитесь к администратору."
         )
     if "invalid argument" in lower:
         return (
@@ -804,6 +803,14 @@ def normalized_escl_url(url: str) -> str:
     )
 
 
+def normalized_match_filter(value: object) -> str:
+    """Drop the HP alias that older releases inserted for every Linux user."""
+    match_filter = str(value or "").strip()
+    if match_filter.casefold() in LEGACY_DEFAULT_MATCHES:
+        return ""
+    return match_filter
+
+
 def profile_name(profile: dict[str, object]) -> str:
     return str(profile.get("name") or DEFAULT_SCANNER_NAME)
 
@@ -811,6 +818,19 @@ def profile_name(profile: dict[str, object]) -> str:
 def profile_url(profile: dict[str, object]) -> str:
     raw_url = str(profile.get("url") or "").strip()
     return normalized_escl_url(raw_url) if raw_url else ""
+
+
+def is_legacy_default_profile(profile: dict[str, object]) -> bool:
+    """Identify the old automatically-created MFP-YUR/HP M428 profile."""
+    backend = str(profile.get("backend") or "airscan").casefold()
+    if IS_WINDOWS or backend != "airscan":
+        return False
+    name = str(profile.get("name") or "").casefold()
+    if "mfp-yur" not in name:
+        return False
+    url = profile_url(profile)
+    host = urllib.parse.urlsplit(url).hostname if url else ""
+    return host in {"127.0.0.1", "localhost", "::1"}
 
 
 def profile_environment(
@@ -969,7 +989,7 @@ def adf_profile_fields(capabilities: dict[str, object]) -> dict[str, object]:
 
 
 def parse_sane_source_capabilities(output: str) -> dict[str, object]:
-    """Read Flatbed/ADF/duplex support from ``scanimage --help``."""
+    """Read source support and the backend's exact option names."""
     match = re.search(
         r"^\s*--source\s+(?P<values>.+?)\s+\[[^\]]*\]\s*$",
         output,
@@ -980,18 +1000,48 @@ def parse_sane_source_capabilities(output: str) -> dict[str, object]:
             "capabilities_known": False,
             "has_adf": False,
             "supports_duplex": False,
+            "source_map": {},
         }
     sources = [
-        value.strip().casefold()
+        value.strip().strip('"')
         for value in match.group("values").split("|")
     ]
+    source_map: dict[str, str] = {}
+    for source in sources:
+        normalized = source.casefold().replace("_", " ").replace("-", " ")
+        is_adf = "adf" in normalized or "document feeder" in normalized
+        is_duplex = is_adf and (
+            "duplex" in normalized or "double sided" in normalized
+        )
+        if (
+            "flatbed" in normalized or "platen" in normalized
+        ) and "Flatbed" not in source_map:
+            source_map["Flatbed"] = source
+        if is_adf and not is_duplex and "ADF" not in source_map:
+            source_map["ADF"] = source
+        if is_duplex and "ADF Duplex" not in source_map:
+            source_map["ADF Duplex"] = source
+
+    # Some backends expose only a duplex ADF value. It can still scan one side
+    # when the frontend asks for the normal feeder source.
+    if "ADF" not in source_map and "ADF Duplex" in source_map:
+        source_map["ADF"] = source_map["ADF Duplex"]
     return {
         "capabilities_known": True,
-        "has_adf": any("adf" in value for value in sources),
-        "supports_duplex": any(
-            "adf" in value and "duplex" in value for value in sources
-        ),
+        "has_adf": "ADF" in source_map,
+        "supports_duplex": "ADF Duplex" in source_map,
+        "source_map": source_map,
     }
+
+
+def sane_source_for_profile(profile: dict[str, object], source: str) -> str:
+    """Translate the common UI source to the exact SANE backend value."""
+    mapping = profile.get("sane_sources")
+    if isinstance(mapping, dict):
+        mapped = str(mapping.get(source) or "").strip()
+        if mapped:
+            return mapped
+    return source
 
 
 def network_escl_url(address: str, timeout: float = 2.5) -> str:
@@ -1077,6 +1127,35 @@ def list_backend_devices(
         return ""
 
 
+def list_system_sane_devices(timeout: float = 12.0) -> str:
+    """List installed SANE devices without restricting discovery to HP."""
+    env = {**os.environ, "LC_ALL": "C"}
+    env.pop("SANE_AIRSCAN_DEVICE", None)
+    try:
+        result = subprocess.run(
+            ["scanimage", "-L"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+            check=False,
+            env=env,
+        )
+        return safe_decode(result.stdout)
+    except FileNotFoundError as exc:
+        raise Naps3Error(
+            "Не установлен scanimage. Установите пакет sane-backends."
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        # scanimage may already have printed local devices before a slow
+        # network backend reached the timeout.
+        output = safe_decode(exc.stdout or b"")
+        append_scan_log(
+            "SANE discovery timed out; keeping completed results: "
+            f"{compact_details(output, 500)}"
+        )
+        return output
+
+
 def parse_generic_sane_devices(output: str) -> list[dict[str, str]]:
     pattern = re.compile(
         r"^device [`'](?P<id>[^`']+)[`'] is a (?P<description>.+)$",
@@ -1098,23 +1177,45 @@ def parse_generic_sane_devices(output: str) -> list[dict[str, str]]:
     return devices
 
 
-def build_hpaio_profile(
+def sane_backend_name(device_id: str) -> str:
+    return device_id.partition(":")[0].strip().casefold()
+
+
+def is_selectable_sane_device(device_id: str) -> bool:
+    """Exclude network discovery and virtual test devices from the local list."""
+    return sane_backend_name(device_id) not in {
+        "airscan",
+        "escl",
+        "net",
+        "test",
+        "v4l",
+    }
+
+
+def build_sane_profile(
     item: dict[str, str],
     help_output: str = "",
 ) -> dict[str, object]:
     device_id = item.get("id", "").strip()
-    name = item.get("name", "").strip() or "HP USB-сканер"
+    backend = sane_backend_name(device_id) or "sane"
+    name = item.get("name", "").strip() or "USB-сканер"
     source_capabilities = parse_sane_source_capabilities(help_output)
+    is_hpaio = backend in {"hp", "hpaio"}
     return {
         "name": name,
         "url": "",
         "device_id": device_id,
-        "transport": "HPLIP hpaio, прямой USB",
-        "connection_kind": "usb-hpaio",
-        "backend": "hpaio",
+        "transport": (
+            "HPLIP hpaio, прямой USB"
+            if is_hpaio
+            else f"SANE {backend}, локальный сканер"
+        ),
+        "connection_kind": "usb-hpaio" if is_hpaio else "usb-sane",
+        "backend": backend,
         "ip": "",
         "saved_at": int(time.time()),
-        "profile_source": "hpaio-usb",
+        "profile_source": f"{backend}-local",
+        "sane_sources": dict(source_capabilities["source_map"]),
         "adf_capabilities_known": bool(
             source_capabilities["capabilities_known"]
         ),
@@ -1125,6 +1226,14 @@ def build_hpaio_profile(
     }
 
 
+def build_hpaio_profile(
+    item: dict[str, str],
+    help_output: str = "",
+) -> dict[str, object]:
+    """Compatibility wrapper for existing callers and saved-profile tests."""
+    return build_sane_profile(item, help_output)
+
+
 def discover_usb_scanners(
     match_filter: str = "",
 ) -> list[dict[str, object]]:
@@ -1132,8 +1241,8 @@ def discover_usb_scanners(
     Find only scanners physically connected to this PC.
 
     Fast path: ipp-usb/eSCL on 127.0.0.1.
-    Compatibility path: HP HPLIP hpaio:/usb backend, needed by models such
-    as LaserJet MFP M227/M231 when they do not expose USB scanning via eSCL.
+    Compatibility path: all locally installed SANE backends, including
+    Canon pixma, Epson, Brother and HP hpaio drivers.
     """
     if IS_WINDOWS:
         try:
@@ -1163,26 +1272,37 @@ def discover_usb_scanners(
             }
         )
 
-    # ipp-usb and hpaio compete for the same physical HP device.  Once the
-    # local eSCL proxy is available, offering the hpaio duplicate is actively
-    # harmful: on M428/M429 it is listed by ``scanimage -L`` but fails as soon
-    # as it is opened with an I/O error.  Keep hpaio only as the compatibility
-    # path for older models which do not expose IPP-over-USB at all.
+    # ipp-usb may compete with a vendor backend for the same physical device.
+    # Once a working local eSCL proxy exists, keep that already-tested path and
+    # do not offer duplicate SANE entries for the same scanner.
     if not url:
-        hpaio_output = list_backend_devices(
-            ["hpaio"],
-            7.0,
-            USB_SANE_DIR,
-        )
-        hpaio_env = prepare_limited_sane_config(
-            USB_SANE_DIR,
-            ["hpaio"],
-        )
-        for item in parse_generic_sane_devices(hpaio_output):
+        sane_output = list_system_sane_devices()
+        sane_items = parse_generic_sane_devices(sane_output)
+
+        # Preserve the old HPLIP compatibility path on installations where
+        # hpaio is present but omitted from the system dll.conf.
+        if not any(
+            sane_backend_name(item.get("id", "")) in {"hp", "hpaio"}
+            for item in sane_items
+        ):
+            sane_items.extend(
+                parse_generic_sane_devices(
+                    list_backend_devices(["hpaio"], 7.0, USB_SANE_DIR)
+                )
+            )
+
+        for item in sane_items:
             raw_device_id = item.get("id", "").strip()
-            device_id = raw_device_id.casefold()
-            if not device_id.startswith(("hpaio:/usb/", "hp:/usb/")):
+            if not raw_device_id or not is_selectable_sane_device(raw_device_id):
                 continue
+            backend = sane_backend_name(raw_device_id)
+            probe_env = {**os.environ, "LC_ALL": "C"}
+            probe_env.pop("SANE_AIRSCAN_DEVICE", None)
+            if backend in {"hp", "hpaio"}:
+                probe_env = prepare_limited_sane_config(
+                    USB_SANE_DIR,
+                    ["hpaio"],
+                )
             try:
                 probe = subprocess.run(
                     ["scanimage", "-d", raw_device_id, "--help"],
@@ -1190,18 +1310,18 @@ def discover_usb_scanners(
                     stderr=subprocess.STDOUT,
                     timeout=5,
                     check=False,
-                    env=hpaio_env,
+                    env=probe_env,
                 )
             except (OSError, subprocess.TimeoutExpired):
                 continue
             if probe.returncode != 0:
                 append_scan_log(
-                    "USB hpaio ignored: device is listed but cannot be "
+                    "SANE device ignored: listed but cannot be "
                     f"opened: {compact_details(safe_decode(probe.stdout), 400)}"
                 )
                 continue
             profiles.append(
-                build_hpaio_profile(item, safe_decode(probe.stdout))
+                build_sane_profile(item, safe_decode(probe.stdout))
             )
 
     unique: list[dict[str, object]] = []
@@ -1230,21 +1350,15 @@ def choose_usb_profile(
             ).casefold()
             if filter_text in haystack:
                 return profile
-    # A manually requested USB connection must not be rejected by a stale
-    # alias such as MFP-YUR from another printer.
     if len(profiles) == 1:
         return profiles[0]
-    for marker in ("m227", "m231", "m428", "m429", "laserjet"):
-        for profile in profiles:
-            if marker in str(profile.get("name", "")).casefold():
-                return profile
-    return profiles[0]
+    # Multiple devices require an explicit choice in the dialog. Selecting a
+    # preferred vendor or model here caused unrelated HP devices to win.
+    return None
 
 
 def usb_diagnostic_text() -> str:
     details: list[str] = []
-    if shutil.which("hp-scan") is None:
-        details.append("HPLIP/hpaio не установлен")
     try:
         result = subprocess.run(
             ["sane-find-scanner", "-q"],
@@ -1255,7 +1369,13 @@ def usb_diagnostic_text() -> str:
         )
         output = compact_details(safe_decode(result.stdout), 300)
         if output:
-            details.append(f"USB: {output}")
+            if "permission" in output.casefold() or "access denied" in output.casefold():
+                details.append(
+                    "USB-устройство найдено, но текущему пользователю не хватает "
+                    f"прав доступа: {output}"
+                )
+            else:
+                details.append(f"USB: {output}")
     except Exception:
         pass
     return "; ".join(details)
@@ -1575,11 +1695,6 @@ def discover_loopback_escl_url(
             if filter_text in safe_decode(data).casefold():
                 return normalized_escl_url(url)
 
-    for marker in ("m428f", "laserjet pro m428", "mfp-yur"):
-        for url, data in results:
-            if marker in safe_decode(data).casefold():
-                return normalized_escl_url(url)
-
     return normalized_escl_url(sorted(results, key=lambda item: item[0])[0][0])
 
 
@@ -1616,7 +1731,7 @@ def parse_airscan_candidates(
     Parse local USB and network sane-airscan devices.
 
     The application still prefers a physical USB connection, but it may use
-    the matching M428/M429 over the network when USB is unavailable.
+    an explicitly matching network scanner when USB is unavailable.
     """
     candidates: list[dict[str, str]] = []
     pattern = re.compile(
@@ -1685,31 +1800,22 @@ def choose_airscan_candidate(
                 return item
         return None
 
-    # Prefer a physical USB device.
+    # Prefer a matching physical USB device.
     selected = filter_match(local_candidates)
     if selected:
         return selected
 
-    for marker in ("m428f", "m429f", "laserjet pro m428", "mfp-yur"):
-        for item in local_candidates:
-            if marker in item["line"].casefold():
-                return item
-
     if len(local_candidates) == 1:
         return local_candidates[0]
 
-    # MFP-YUR is a local alias and may disappear from the network name.
-    # The M428/M429 model is therefore accepted as the same target device.
     selected = filter_match(network_candidates)
     if selected:
         return selected
 
-    for marker in ("m428f", "m429f", "laserjet pro m428"):
-        for item in network_candidates:
-            if marker in item["line"].casefold():
-                return item
+    if not local_candidates and len(network_candidates) == 1:
+        return network_candidates[0]
 
-    # Do not silently select another model such as an M227.
+    # Several devices always require a user choice.
     return None
 
 
@@ -1822,6 +1928,11 @@ def discover_scanner_profile(
     selected_usb = choose_usb_profile(usb_profiles, match_filter)
     if selected_usb:
         return selected_usb
+    if usb_profiles:
+        raise Naps3Error(
+            "Найдено несколько локальных сканеров. Нажмите «Подключить "
+            "сканер…» и выберите нужное устройство."
+        )
 
     network_devices = discover_network_scanners()
     selected_network = choose_airscan_candidate(
@@ -1857,9 +1968,8 @@ def discover_scanner_profile(
 
     diagnostic = usb_diagnostic_text()
     message = (
-        "Локальный USB-сканер не найден. Для HP LaserJet M227/M231 "
-        "нужен backend HPLIP hpaio; для современных моделей может "
-        "использоваться ipp-usb/eSCL."
+        "Локальный сканер не найден. Проверьте USB-кабель, питание МФУ "
+        "и наличие подходящего SANE-драйвера производителя."
     )
     if diagnostic:
         message += f"\n\nДиагностика: {diagnostic}"
@@ -2065,7 +2175,7 @@ class USBScannerDialog(Gtk.Dialog):
             title=(
                 "Подключение сканера Windows"
                 if IS_WINDOWS
-                else "Подключение USB-сканера"
+                else "Подключение локального сканера"
             ),
             transient_for=parent,
             modal=True,
@@ -2084,7 +2194,7 @@ class USBScannerDialog(Gtk.Dialog):
         title.set_markup(
             "<b>Выберите сканер Windows</b>"
             if IS_WINDOWS
-            else "<b>Выберите локальный USB-сканер</b>"
+            else "<b>Выберите локальный сканер</b>"
         )
         title.set_xalign(0)
         area.pack_start(title, False, False, 0)
@@ -2095,9 +2205,8 @@ class USBScannerDialog(Gtk.Dialog):
                 "системный интерфейс WIA."
                 if IS_WINDOWS
                 else (
-                    "NAPS3 проверяет два способа: driverless ipp-usb/eSCL и "
-                    "драйвер HP HPLIP (hpaio). Сетевые устройства в этот список "
-                    "не включаются."
+                    "NAPS3 проверяет driverless ipp-usb/eSCL и установленные "
+                    "локальные SANE-драйверы, включая pixma и hpaio."
                 )
             )
         )
@@ -2114,7 +2223,11 @@ class USBScannerDialog(Gtk.Dialog):
                 else (
                     "HPLIP / hpaio"
                     if profile.get("connection_kind") == "usb-hpaio"
-                    else "ipp-usb / eSCL"
+                    else (
+                        f"SANE / {profile.get('backend') or 'локальный'}"
+                        if profile.get("connection_kind") == "usb-sane"
+                        else "ipp-usb / eSCL"
+                    )
                 )
             )
             self.combo.append(
@@ -2131,8 +2244,8 @@ class USBScannerDialog(Gtk.Dialog):
                 "производителя МФУ и переподключите USB-кабель."
                 if IS_WINDOWS
                 else (
-                    "Если список пуст, установщик версии 0.4.1 добавит HPLIP. "
-                    "После установки переподключите USB-кабель."
+                    "Если списка нет, установите пакет SANE-драйвера вашего "
+                    "сканера и переподключите USB-кабель."
                 )
             )
         )
@@ -2862,9 +2975,7 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         device_header.pack_start(device_identity, True, True, 0)
 
-        self.device_name_label = Gtk.Label(
-            label="HP LaserJet Pro M428f"
-        )
+        self.device_name_label = Gtk.Label(label="Сканер не выбран")
         self.device_name_label.set_xalign(0)
         self.device_name_label.set_line_wrap(True)
         self.device_name_label.set_max_width_chars(24)
@@ -2878,9 +2989,7 @@ class MainWindow(Gtk.ApplicationWindow):
             0,
         )
 
-        self.device_model_label = Gtk.Label(
-            label="MFP-YUR • USB"
-        )
+        self.device_model_label = Gtk.Label(label="USB или сеть")
         self.device_model_label.set_xalign(0)
         self.device_model_label.set_line_wrap(True)
         self.device_model_label.get_style_context().add_class(
@@ -2921,7 +3030,7 @@ class MainWindow(Gtk.ApplicationWindow):
         device_grid.attach(connection_caption, 1, 0, 1, 1)
 
         self.device_connection_label = Gtk.Label(
-            label="Локальный USB через ipp-usb"
+            label="Нет подключения"
         )
         self.device_connection_label.set_xalign(0)
         self.device_connection_label.set_line_wrap(True)
@@ -2950,9 +3059,7 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         device_grid.attach(address_caption, 1, 2, 1, 1)
 
-        self.device_address_label = Gtk.Label(
-            label="127.0.0.1:60000"
-        )
+        self.device_address_label = Gtk.Label(label="Выберите устройство")
         self.device_address_label.set_xalign(0)
         self.device_address_label.set_selectable(True)
         self.device_address_label.get_style_context().add_class(
@@ -2994,9 +3101,9 @@ class MainWindow(Gtk.ApplicationWindow):
         self.busy_widgets.append(refresh_button)
 
         usb_button = toolbar_button(
-            "Подключить по USB…",
+            "Подключить сканер…",
             "drive-removable-media-symbolic",
-            "Найти только физически подключённый USB-сканер",
+            "Найти локальные сканеры через ipp-usb и SANE",
             lambda _button: self.connect_usb_scanner(),
         )
         usb_button.get_style_context().add_class(
@@ -3369,7 +3476,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _load_ui_settings(self) -> None:
         self.match_entry.set_text(
-            str(self.settings.get("match", DEFAULT_MATCH))
+            normalized_match_filter(self.settings.get("match", DEFAULT_MATCH))
         )
         self.source_combo.set_active_id(
             str(self.settings.get("source", "ADF"))
@@ -3468,7 +3575,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _save_ui_settings(self) -> None:
         settings: dict[str, object] = {
-            "match": self.match_entry.get_text().strip() or DEFAULT_MATCH,
+            "match": normalized_match_filter(self.match_entry.get_text()),
             "source": self.source_combo.get_active_id() or "ADF",
             "mode": self.mode_combo.get_active_id() or "Color",
             "dpi": int(self.dpi_combo.get_active_id() or "300"),
@@ -3611,6 +3718,20 @@ class MainWindow(Gtk.ApplicationWindow):
         state: str = "ready",
     ) -> None:
         self._update_source_options(profile)
+        if not profile:
+            self.device_name_label.set_text("Сканер не выбран")
+            self.device_model_label.set_text(
+                "Windows WIA" if IS_WINDOWS else "USB или сеть"
+            )
+            self.device_connection_label.set_text("Нет подключения")
+            self.device_address_label.set_text("Выберите устройство")
+            self._set_device_status(
+                "error" if state == "error" else "checking",
+                "Не выбран" if state == "error" else "Проверка",
+                message,
+            )
+            return
+
         name = profile_name(profile)
         url = profile_url(profile)
         parsed = urllib.parse.urlsplit(url) if url else None
@@ -3646,7 +3767,7 @@ class MainWindow(Gtk.ApplicationWindow):
         ).strip()
 
         self.device_name_label.set_text(
-            display_name or "HP LaserJet Pro M428f"
+            display_name or DEFAULT_SCANNER_NAME
         )
         self.device_model_label.set_text(model_suffix)
         if connection_kind == "network":
@@ -3667,6 +3788,12 @@ class MainWindow(Gtk.ApplicationWindow):
         elif connection_kind == "usb-hpaio":
             self.device_connection_label.set_text(
                 "Прямой USB через HP HPLIP (hpaio)"
+            )
+            self.device_address_label.set_text("USB-порт этого компьютера")
+        elif connection_kind == "usb-sane":
+            backend = str(profile.get("backend") or "SANE")
+            self.device_connection_label.set_text(
+                f"Локальный сканер через SANE ({backend})"
             )
             self.device_address_label.set_text("USB-порт этого компьютера")
         else:
@@ -3822,6 +3949,30 @@ class MainWindow(Gtk.ApplicationWindow):
         recovered: bool,
     ) -> bool:
         if error:
+            if self.scanner_profile and is_legacy_default_profile(
+                self.scanner_profile
+            ):
+                old_name = profile_name(self.scanner_profile)
+                self.scanner_profile = None
+                match_entry = getattr(self, "match_entry", None)
+                if match_entry is not None:
+                    match_entry.set_text("")
+                self._set_device_profile(
+                    {},
+                    (
+                        f"Старый автоматический профиль «{old_name}» удалён, "
+                        "потому что устройство не найдено. Выберите реально "
+                        "подключённый сканер.\n\n"
+                        f"{error}"
+                    ),
+                    "error",
+                )
+                try:
+                    self._save_ui_settings()
+                except OSError:
+                    pass
+                self.set_status("Сканер не выбран")
+                return False
             if self.scanner_profile:
                 self._set_device_profile(
                     self.scanner_profile,
@@ -3940,7 +4091,7 @@ class MainWindow(Gtk.ApplicationWindow):
             True,
             "Поиск сканеров Windows WIA…"
             if IS_WINDOWS
-            else "Поиск локального USB-сканера…",
+            else "Поиск локальных сканеров…",
         )
         self._set_device_status(
             "checking",
@@ -3948,7 +4099,7 @@ class MainWindow(Gtk.ApplicationWindow):
             (
                 "Читается список установленных устройств WIA…"
                 if IS_WINDOWS
-                else "Проверяются ipp-usb/eSCL и HP HPLIP (hpaio)…"
+                else "Проверяются ipp-usb/eSCL и установленные SANE-драйверы…"
             ),
         )
         match_filter = self.match_entry.get_text().strip()
@@ -3963,7 +4114,7 @@ class MainWindow(Gtk.ApplicationWindow):
                     [],
                     friendly_general_error(
                         exc,
-                        "найти сканер Windows" if IS_WINDOWS else "найти USB-сканер",
+                        "найти сканер Windows" if IS_WINDOWS else "найти локальный сканер",
                     ),
                 )
 
@@ -3989,20 +4140,19 @@ class MainWindow(Gtk.ApplicationWindow):
                 "подключено, затем установите WIA-драйвер производителя."
                 if IS_WINDOWS
                 else (
-                    "Физически подключённый USB-сканер не найден. Убедитесь, "
-                    "что МФУ включено и кабель подключён к этому компьютеру. "
-                    "Для HP M227/M231 требуется пакет HPLIP/hpaio."
+                    "Локальный сканер не найден. Убедитесь, что МФУ включено, "
+                    "USB-кабель подключён и установлен подходящий SANE-драйвер."
                 )
             )
             if diagnostic:
                 message += f"\n\nДиагностика: {diagnostic}"
             self._set_device_status("error", "Не найден", message)
             self.show_error(
-                "Сканер Windows не найден" if IS_WINDOWS else "USB-сканер не найден",
+                "Сканер Windows не найден" if IS_WINDOWS else "Локальный сканер не найден",
                 message,
             )
             self.set_status(
-                "Сканер Windows не найден" if IS_WINDOWS else "USB-сканер не найден"
+                "Сканер Windows не найден" if IS_WINDOWS else "Локальный сканер не найден"
             )
             return False
 
@@ -4017,7 +4167,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 self.set_status(
                     "Выбор сканера отменён"
                     if IS_WINDOWS
-                    else "Подключение по USB отменено"
+                    else "Подключение сканера отменено"
                 )
                 return False
 
@@ -4031,7 +4181,11 @@ class MainWindow(Gtk.ApplicationWindow):
                 else (
                     "USB-сканер подключён через HPLIP (hpaio)."
                     if profile.get("connection_kind") == "usb-hpaio"
-                    else "USB-сканер подключён через ipp-usb/eSCL."
+                    else (
+                        f"Сканер подключён через SANE ({profile.get('backend')})."
+                        if profile.get("connection_kind") == "usb-sane"
+                        else "USB-сканер подключён через ipp-usb/eSCL."
+                    )
                 )
             ),
             "ready",
@@ -4043,7 +4197,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.set_status(
             "Сканер Windows подключён"
             if profile.get("backend") == "wia"
-            else "USB-сканер подключён"
+            else "Локальный сканер подключён"
         )
         return False
 
@@ -4563,6 +4717,7 @@ class MainWindow(Gtk.ApplicationWindow):
         ) == "network"
         software_lineart = mode == "Lineart" and is_network_profile
         scanner_mode = "Gray" if software_lineart else mode
+        scanner_source = sane_source_for_profile(profile, source)
 
         GLib.idle_add(
             self._set_device_profile,
@@ -4580,7 +4735,7 @@ class MainWindow(Gtk.ApplicationWindow):
             "-d",
             device,
             "--source",
-            source,
+            scanner_source,
             "--mode",
             scanner_mode,
             "--resolution",
@@ -4592,7 +4747,7 @@ class MainWindow(Gtk.ApplicationWindow):
         ]
 
         append_scan_log(
-            f"SANE engine device={device} source={source} dpi={dpi} "
+            f"SANE engine device={device} source={scanner_source} dpi={dpi} "
             f"mode={scanner_mode} software_lineart={software_lineart}"
         )
 
@@ -5276,7 +5431,7 @@ class MainWindow(Gtk.ApplicationWindow):
             if direct_url:
                 direct_host = urllib.parse.urlsplit(direct_url).hostname or ""
             is_local_usb = (
-                connection_kind in {"usb", "usb-hpaio"}
+                connection_kind in {"usb", "usb-hpaio", "usb-sane"}
                 or direct_host in {"127.0.0.1", "localhost", "::1"}
             )
 

@@ -5,7 +5,7 @@
 %global _licensedir /usr/share/licenses
 
 Name:           naps3
-Version:        0.8
+Version:        0.8.1
 Release:        1.red80
 Summary:        Сканирование документов через SANE и eSCL
 License:        MIT AND BSD-2-Clause
@@ -16,6 +16,7 @@ Requires:       python3-gobject
 Requires:       gtk3
 Requires:       python3-pillow
 Requires:       sane-backends
+Recommends:     sane-backends-drivers-scanners
 Requires:       sane-airscan
 Requires:       ipp-usb
 Requires:       poppler-utils
@@ -56,6 +57,8 @@ install -Dpm0644 naps3.svg \
     %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/naps3.svg
 install -Dpm0644 naps3.png \
     %{buildroot}%{_datadir}/icons/hicolor/256x256/apps/naps3.png
+install -Dpm0644 packaging/60-naps3-scanners.rules \
+    %{buildroot}%{_prefix}/lib/udev/rules.d/60-naps3-scanners.rules
 
 install -Dpm0644 packaging/ipp-usb-naps3-rpm.service.conf \
     %{buildroot}%{_sysconfdir}/systemd/system/ipp-usb.service.d/90-naps3-m428.conf
@@ -75,14 +78,20 @@ install -Dpm0644 LICENSE.ipp-usb \
 %post
 /usr/bin/systemctl daemon-reload >/dev/null 2>&1 || :
 /usr/bin/systemctl restart ipp-usb.service >/dev/null 2>&1 || :
+/usr/bin/udevadm control --reload-rules >/dev/null 2>&1 || :
+/usr/bin/udevadm trigger --action=add --subsystem-match=usb \
+    --attr-match=idVendor=04a9 --attr-match=idProduct=2737 >/dev/null 2>&1 || :
 /usr/bin/update-desktop-database %{_datadir}/applications >/dev/null 2>&1 || :
 /usr/bin/gtk-update-icon-cache -f %{_datadir}/icons/hicolor >/dev/null 2>&1 || :
 exit 0
 
 %postun
 /usr/bin/systemctl daemon-reload >/dev/null 2>&1 || :
+/usr/bin/udevadm control --reload-rules >/dev/null 2>&1 || :
 if [ "$1" -eq 0 ]; then
     /usr/bin/systemctl restart ipp-usb.service >/dev/null 2>&1 || :
+    /usr/bin/udevadm trigger --action=add --subsystem-match=usb \
+        --attr-match=idVendor=04a9 --attr-match=idProduct=2737 >/dev/null 2>&1 || :
 fi
 /usr/bin/update-desktop-database %{_datadir}/applications >/dev/null 2>&1 || :
 /usr/bin/gtk-update-icon-cache -f %{_datadir}/icons/hicolor >/dev/null 2>&1 || :
@@ -101,6 +110,7 @@ exit 0
 %{_datadir}/applications/ru.redos.NAPS3.desktop
 %{_datadir}/icons/hicolor/scalable/apps/naps3.svg
 %{_datadir}/icons/hicolor/256x256/apps/naps3.png
+%{_prefix}/lib/udev/rules.d/60-naps3-scanners.rules
 %{_sysconfdir}/systemd/system/ipp-usb.service.d/90-naps3-m428.conf
 %doc %{_docdir}/%{name}/README.txt
 %doc %{_docdir}/%{name}/RPM_INSTALL.txt
@@ -108,6 +118,11 @@ exit 0
 %license %{_licensedir}/%{name}/LICENSE.ipp-usb
 
 %changelog
+* Wed Sep 09 2026 NAPS3 contributors <noreply@localhost> - 0.8.1-1.red80
+- Удалены автоматический фильтр MFP-YUR и приоритет HP при выборе устройства.
+- Добавлен поиск локальных SANE-сканеров, включая Canon pixma.
+- Добавлено правило доступа udev для Canon MF4410 (04a9:2737).
+
 * Tue Sep 08 2026 NAPS3 contributors <noreply@localhost> - 0.8-1.red80
 - Добавлена отдельная сборка для Windows с системным backend WIA.
 - Linux backend SANE/eSCL и существующий интерфейс сохранены.
