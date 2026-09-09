@@ -112,7 +112,7 @@ except ImportError as exc:
 
 APP_ID = "ru.redos.NAPS3"
 APP_NAME = "NAPS3"
-APP_VERSION = "0.8.1"
+APP_VERSION = "0.8.2"
 DEFAULT_MATCH = ""
 DEFAULT_SCANNER_NAME = "Сканер Windows" if IS_WINDOWS else "Сканер"
 DEFAULT_ESCL_URL = "http://127.0.0.1:60000/eSCL"
@@ -462,9 +462,8 @@ def friendly_scan_error(raw: str, cancelled: bool = False) -> str:
                 "сканирования или обратитесь к администратору."
             )
         return (
-            "Нет доступа к USB-сканеру. Переподключите кабель после установки "
-            "последней версии NAPS3. Если ошибка сохранится, проверьте правила "
-            "udev для этого устройства или обратитесь к администратору."
+            "Нет доступа к USB-сканеру. Установите локальное обновление NAPS3 "
+            "0.8.2 от имени администратора, затем повторите подключение."
         )
     if "invalid argument" in lower:
         return (
@@ -1104,6 +1103,21 @@ def prepare_limited_sane_config(
     return env
 
 
+def local_sane_backend_environment(backend: str) -> dict[str, str]:
+    """Open vendor backends even when the system dll.conf omits them."""
+    normalized = backend.casefold().strip()
+    if normalized in {"hp", "hpaio"}:
+        return prepare_limited_sane_config(USB_SANE_DIR, ["hpaio"])
+    if normalized == "pixma":
+        return prepare_limited_sane_config(
+            USB_SANE_DIR / "pixma",
+            ["pixma"],
+        )
+    env = {**os.environ, "LC_ALL": "C"}
+    env.pop("SANE_AIRSCAN_DEVICE", None)
+    return env
+
+
 def list_backend_devices(
     backends: list[str],
     timeout: float,
@@ -1279,15 +1293,30 @@ def discover_usb_scanners(
         sane_output = list_system_sane_devices()
         sane_items = parse_generic_sane_devices(sane_output)
 
-        # Preserve the old HPLIP compatibility path on installations where
-        # hpaio is present but omitted from the system dll.conf.
-        if not any(
-            sane_backend_name(item.get("id", "")) in {"hp", "hpaio"}
-            for item in sane_items
-        ):
+        # Vendor backends can be installed but omitted from the system
+        # dll.conf. Probe the two compatibility paths explicitly.
+        fallback_backends = (
+            ("pixma", USB_SANE_DIR / "pixma"),
+            ("hpaio", USB_SANE_DIR),
+        )
+        for fallback_backend, config_dir in fallback_backends:
+            accepted_names = (
+                {"hp", "hpaio"}
+                if fallback_backend == "hpaio"
+                else {"pixma"}
+            )
+            if any(
+                sane_backend_name(item.get("id", "")) in accepted_names
+                for item in sane_items
+            ):
+                continue
             sane_items.extend(
                 parse_generic_sane_devices(
-                    list_backend_devices(["hpaio"], 7.0, USB_SANE_DIR)
+                    list_backend_devices(
+                        [fallback_backend],
+                        7.0,
+                        config_dir,
+                    )
                 )
             )
 
@@ -1296,13 +1325,7 @@ def discover_usb_scanners(
             if not raw_device_id or not is_selectable_sane_device(raw_device_id):
                 continue
             backend = sane_backend_name(raw_device_id)
-            probe_env = {**os.environ, "LC_ALL": "C"}
-            probe_env.pop("SANE_AIRSCAN_DEVICE", None)
-            if backend in {"hp", "hpaio"}:
-                probe_env = prepare_limited_sane_config(
-                    USB_SANE_DIR,
-                    ["hpaio"],
-                )
+            probe_env = local_sane_backend_environment(backend)
             try:
                 probe = subprocess.run(
                     ["scanimage", "-d", raw_device_id, "--help"],
@@ -1367,12 +1390,29 @@ def usb_diagnostic_text() -> str:
             timeout=5,
             check=False,
         )
-        output = compact_details(safe_decode(result.stdout), 300)
+        raw_output = safe_decode(result.stdout)
+        output = compact_details(raw_output, 300)
         if output:
-            if "permission" in output.casefold() or "access denied" in output.casefold():
+            canon_found = (
+                "vendor=0x04a9" in raw_output.casefold()
+                and "product=0x2737" in raw_output.casefold()
+            )
+            canon_denied = re.search(
+                r"could not open USB device\s+0x04a9/0x2737[^\n]*"
+                r"(?:access denied|permission)",
+                raw_output,
+                flags=re.IGNORECASE,
+            )
+            if canon_denied:
                 details.append(
-                    "USB-устройство найдено, но текущему пользователю не хватает "
-                    f"прав доступа: {output}"
+                    "Canon MF4410 найден, но текущему пользователю не хватает "
+                    f"прав доступа: {compact_details(canon_denied.group(0), 220)}"
+                )
+            elif canon_found:
+                details.append(
+                    "Canon MF4410 виден по USB, но backend pixma не создал "
+                    "SANE-устройство. Установите пакет "
+                    "sane-backends-drivers-scanners и повторите поиск."
                 )
             else:
                 details.append(f"USB: {output}")
@@ -3911,11 +3951,9 @@ class MainWindow(Gtk.ApplicationWindow):
                             "это устройство заново."
                         )
                 elif device_id:
-                    env = {**os.environ, "LC_ALL": "C"}
-                    if profile.get("connection_kind") == "usb-hpaio":
-                        env = prepare_limited_sane_config(
-                            USB_SANE_DIR, ["hpaio"]
-                        )
+                    env = local_sane_backend_environment(
+                        sane_backend_name(device_id)
+                    )
                     result = subprocess.run(
                         ["scanimage", "-d", device_id, "--help"],
                         stdout=subprocess.PIPE,
@@ -4688,6 +4726,11 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         device = str(profile.get("device_id") or "")
         env = {**os.environ, "LC_ALL": "C"}
+        connection_kind = str(profile.get("connection_kind") or "")
+        if connection_kind in {"usb-hpaio", "usb-sane"} and device:
+            env = local_sane_backend_environment(
+                sane_backend_name(device)
+            )
 
         scan_url = profile_url(profile)
         scan_host = (

@@ -24,7 +24,8 @@ for file in \
     packaging/naps3.spec packaging/naps3-launcher \
     packaging/ru.redos.NAPS3.desktop \
     packaging/ipp-usb-naps3-rpm.service.conf \
-    packaging/60-naps3-scanners.rules; do
+    packaging/99-naps3-canon-mf4410.rules \
+    packaging/naps3-usb-permissions; do
     [[ -s "$SCRIPT_DIR/$file" ]] || {
         echo "Отсутствует файл пакета: $file" >&2
         exit 1
@@ -91,12 +92,14 @@ chmod 0755 "$SOURCE_DIR/naps3.py" "$SOURCE_DIR/ipp-usb-naps3"
 
 for file in \
     naps3-launcher ru.redos.NAPS3.desktop \
-    ipp-usb-naps3-rpm.service.conf 60-naps3-scanners.rules; do
+    ipp-usb-naps3-rpm.service.conf 99-naps3-canon-mf4410.rules \
+    naps3-usb-permissions; do
     install -m 0644 \
         "$SCRIPT_DIR/packaging/$file" \
         "$SOURCE_DIR/packaging/$file"
 done
 chmod 0755 "$SOURCE_DIR/packaging/naps3-launcher"
+chmod 0755 "$SOURCE_DIR/packaging/naps3-usb-permissions"
 
 tar --sort=name \
     --owner=0 --group=0 --numeric-owner \

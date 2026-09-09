@@ -22,6 +22,7 @@ rm -f /usr/share/icons/hicolor/256x256/apps/naps3.png
 rm -f /etc/ipp-usb/quirks/90-naps3-hp-m428.conf
 rm -f /etc/systemd/system/ipp-usb.service.d/90-naps3-m428.conf
 rm -f /etc/udev/rules.d/60-naps3-scanners.rules
+rm -f /etc/udev/rules.d/99-naps3-canon-mf4410.rules
 rmdir /etc/systemd/system/ipp-usb.service.d 2>/dev/null || true
 systemctl daemon-reload
 systemctl restart ipp-usb.service 2>/dev/null || true

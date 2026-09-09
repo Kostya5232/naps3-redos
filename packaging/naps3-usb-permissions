@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Apply the Canon MF4410 USB permission fix to a device that is already online.
+set -u
+
+if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
+    echo "naps3-usb-permissions must run as root" >&2
+    exit 1
+fi
+
+udevadm control --reload-rules >/dev/null 2>&1 || true
+udevadm trigger --action=change --subsystem-match=usb \
+    --attr-match=idVendor=04a9 --attr-match=idProduct=2737 \
+    >/dev/null 2>&1 || true
+udevadm settle --timeout=5 >/dev/null 2>&1 || true
+
+# uaccess depends on the active local seat and can be absent in a remote
+# desktop session. Repair only the exact Canon USB node immediately; the udev
+# rule above applies the same mode after every reconnect.
+shopt -s nullglob
+matched=0
+for vendor_file in /sys/bus/usb/devices/*/idVendor; do
+    device_dir="${vendor_file%/idVendor}"
+    [[ -r "$device_dir/idProduct" ]] || continue
+    read -r vendor < "$vendor_file" || continue
+    read -r product < "$device_dir/idProduct" || continue
+    [[ ${vendor,,} == "04a9" && ${product,,} == "2737" ]] || continue
+    [[ -r "$device_dir/busnum" && -r "$device_dir/devnum" ]] || continue
+    read -r bus_number < "$device_dir/busnum" || continue
+    read -r device_number < "$device_dir/devnum" || continue
+    printf -v usb_node "/dev/bus/usb/%03d/%03d" \
+        "$((10#$bus_number))" "$((10#$device_number))"
+    [[ -e "$usb_node" ]] || continue
+    matched=1
+    if ! chmod 0666 -- "$usb_node"; then
+        echo "Не удалось изменить права $usb_node" >&2
+        exit 1
+    fi
+    echo "Canon MF4410: права 0666 применены к $usb_node"
+done
+
+if [[ $matched -eq 0 ]]; then
+    echo "Canon MF4410 сейчас не подключён; правило применится при подключении."
+fi

@@ -1,0 +1,8 @@
+# Canon i-SENSYS/imageCLASS MF4410 (SANE pixma, USB 04a9:2737).
+# This late, device-specific rule also works in remote desktop sessions where
+# systemd-logind does not grant the uaccess ACL to the current user.
+ACTION!="add|change", GOTO="naps3_canon_end"
+SUBSYSTEM!="usb", GOTO="naps3_canon_end"
+ENV{DEVTYPE}!="usb_device", GOTO="naps3_canon_end"
+ATTR{idVendor}=="04a9", ATTR{idProduct}=="2737", MODE="0666", ENV{libsane_matched}="yes", TAG+="uaccess"
+LABEL="naps3_canon_end"

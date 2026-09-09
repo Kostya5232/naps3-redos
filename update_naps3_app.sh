@@ -13,11 +13,33 @@ SOURCE="$SCRIPT_DIR/naps3.py"
 [[ -s "$SOURCE" ]] || { echo "Не найден $SOURCE" >&2; exit 1; }
 BACKEND_SOURCE="$SCRIPT_DIR/windows_backend.py"
 [[ -s "$BACKEND_SOURCE" ]] || { echo "Не найден $BACKEND_SOURCE" >&2; exit 1; }
-UDEV_RULE_SOURCE="$SCRIPT_DIR/packaging/60-naps3-scanners.rules"
+UDEV_RULE_SOURCE="$SCRIPT_DIR/packaging/99-naps3-canon-mf4410.rules"
 [[ -s "$UDEV_RULE_SOURCE" ]] || { echo "Не найден $UDEV_RULE_SOURCE" >&2; exit 1; }
+PERMISSION_HELPER="$SCRIPT_DIR/packaging/naps3-usb-permissions"
+[[ -x "$PERMISSION_HELPER" ]] || { echo "Не найден $PERMISSION_HELPER" >&2; exit 1; }
 
 VERSION="$(sed -nE 's/^APP_VERSION = "([^"]+)"/\1/p' "$SOURCE" | head -n 1)"
 [[ -n "$VERSION" ]] || { echo "Не удалось определить версию." >&2; exit 1; }
+
+pixma_backend_installed() {
+    compgen -G '/usr/lib64/sane/libsane-pixma.so*' >/dev/null ||
+        compgen -G '/usr/lib/sane/libsane-pixma.so*' >/dev/null ||
+        compgen -G '/usr/lib/x86_64-linux-gnu/sane/libsane-pixma.so*' >/dev/null
+}
+
+if ! pixma_backend_installed; then
+    command -v dnf >/dev/null 2>&1 || {
+        echo "Не найден backend pixma и команда dnf." >&2
+        exit 1
+    }
+    echo "Установка SANE-драйвера Canon pixma…"
+    dnf install -y sane-backends-drivers-scanners
+fi
+
+pixma_backend_installed || {
+    echo "После установки не найден backend SANE pixma." >&2
+    exit 1
+}
 
 TARGET=""
 if [[ -f /usr/libexec/naps3/naps3.py ]]; then
@@ -56,11 +78,10 @@ if ! /usr/bin/python3 -m py_compile "$TARGET" "$BACKEND_TARGET"; then
 fi
 
 install -d -m 0755 /etc/udev/rules.d
-install -m 0644 "$UDEV_RULE_SOURCE" /etc/udev/rules.d/60-naps3-scanners.rules
-udevadm control --reload-rules 2>/dev/null || true
-udevadm trigger --action=add --subsystem-match=usb \
-    --attr-match=idVendor=04a9 --attr-match=idProduct=2737 \
-    2>/dev/null || true
+rm -f /etc/udev/rules.d/60-naps3-scanners.rules
+install -m 0644 "$UDEV_RULE_SOURCE" /etc/udev/rules.d/99-naps3-canon-mf4410.rules
+install -m 0755 "$PERMISSION_HELPER" "$(dirname "$TARGET")/naps3-usb-permissions"
+"$PERMISSION_HELPER"
 
 INSTALLED_VERSION="$(sed -nE 's/^APP_VERSION = "([^"]+)"/\1/p' "$TARGET" | head -n 1)"
 [[ "$INSTALLED_VERSION" == "$VERSION" ]] || {
