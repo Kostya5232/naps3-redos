@@ -2,6 +2,7 @@
 
 *.py text eol=lf
 *.sh text eol=lf
+*.rules text eol=lf
 *.spec text eol=lf
 *.desktop text eol=lf
 *.conf text eol=lf
@@ -12,3 +13,5 @@
 *.png binary
 ipp-usb-naps3 binary
 
+# Executable helper intentionally has no .sh suffix.
+packaging/naps3-usb-permissions text eol=lf

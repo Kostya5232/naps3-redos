@@ -1,7 +1,0 @@
-# Canon i-SENSYS/imageCLASS MF4410 (SANE pixma, USB 04a9:2737).
-# Mark the device before the system uaccess rule grants the active desktop
-# session an ACL. MODE keeps the device closed to users without that ACL.
-ACTION!="add|change", GOTO="naps3_scanners_end"
-SUBSYSTEM!="usb", GOTO="naps3_scanners_end"
-ATTR{idVendor}=="04a9", ATTR{idProduct}=="2737", MODE="0660", ENV{libsane_matched}="yes", TAG+="uaccess"
-LABEL="naps3_scanners_end"

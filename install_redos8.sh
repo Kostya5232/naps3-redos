@@ -49,7 +49,9 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 for file in \
     naps3.py windows_backend.py naps3.svg naps3.png ipp-usb.conf \
     ipp-usb-naps3 ipp-usb-m428.conf ipp-usb-naps3.service.conf \
-    packaging/60-naps3-scanners.rules LICENSE.ipp-usb; do
+    packaging/naps3-launcher \
+    packaging/99-naps3-canon-mf4410.rules \
+    packaging/naps3-usb-permissions LICENSE.ipp-usb; do
     [[ -f "$SCRIPT_DIR/$file" ]] || {
         echo "В папке установщика отсутствует файл: $file" >&2
         exit 1
@@ -94,7 +96,7 @@ install_first_available python3-gobject pygobject3
 install_first_available gtk3
 install_first_available python3-pillow python3-Pillow
 install_first_available sane-backends
-install_optional_first_available sane-backends-drivers-scanners sane-backends
+install_first_available sane-backends-drivers-scanners sane-backends
 install_first_available sane-airscan
 install_first_available ipp-usb
 install_optional_first_available hplip hplip-common
@@ -129,22 +131,22 @@ systemctl unmask ipp-usb.service 2>/dev/null || true
 systemctl daemon-reload
 systemctl restart ipp-usb.service 2>/dev/null || true
 
-# Canon MF4410 uses the SANE pixma backend. Grant the active desktop user
-# access to its USB device and apply the rule to an already connected scanner.
+# Canon MF4410 uses the SANE pixma backend. The late rule also covers remote
+# desktop sessions where systemd-logind does not add an uaccess ACL.
 install -d -m 755 /etc/udev/rules.d
+rm -f /etc/udev/rules.d/60-naps3-scanners.rules
 install -m 644 \
-    "$SCRIPT_DIR/packaging/60-naps3-scanners.rules" \
-    /etc/udev/rules.d/60-naps3-scanners.rules
-udevadm control --reload-rules 2>/dev/null || true
-udevadm trigger --action=add --subsystem-match=usb \
-    --attr-match=idVendor=04a9 --attr-match=idProduct=2737 \
-    2>/dev/null || true
+    "$SCRIPT_DIR/packaging/99-naps3-canon-mf4410.rules" \
+    /etc/udev/rules.d/99-naps3-canon-mf4410.rules
+"$SCRIPT_DIR/packaging/naps3-usb-permissions"
 
 echo "Остановка запущенной старой версии NAPS3…"
 pkill -f '/opt/naps3/naps3.py' 2>/dev/null || true
 sleep 1
 
 install -d -m 755 /opt/naps3
+install -m 755 "$SCRIPT_DIR/packaging/naps3-usb-permissions" \
+    /opt/naps3/naps3-usb-permissions
 install -m 755 "$SCRIPT_DIR/naps3.py" /opt/naps3/naps3.py.new
 mv -f /opt/naps3/naps3.py.new /opt/naps3/naps3.py
 install -m 644 "$SCRIPT_DIR/windows_backend.py" /opt/naps3/windows_backend.py.new
@@ -162,40 +164,8 @@ install -m 644 \
     "$SCRIPT_DIR/naps3.png" \
     /usr/share/icons/hicolor/256x256/apps/naps3.png
 
-cat >/usr/local/bin/naps3 <<'EOF'
-#!/usr/bin/env bash
-unset PYTHONHOME
-unset PYTHONPATH
-export PYTHONNOUSERSITE=1
-export PYTHONUNBUFFERED=1
-
-LOG_DIR="${HOME}/.cache/naps3"
-LOG_FILE="${LOG_DIR}/startup.log"
-mkdir -p "$LOG_DIR"
-touch "$LOG_FILE"
-
-{
-    echo
-    echo "===== NAPS3 start: $(date --iso-8601=seconds 2>/dev/null || date) ====="
-    echo "User: $(id -un)  Display: ${DISPLAY:-<none>}"
-} >>"$LOG_FILE"
-
-/usr/bin/python3 /opt/naps3/naps3.py "$@"     2> >(tee -a "$LOG_FILE" >&2)
-STATUS=$?
-
-if ((STATUS != 0)); then
-    SUMMARY="$(tail -n 12 "$LOG_FILE" | sed 's/[<>&]/ /g')"
-
-    if command -v zenity >/dev/null 2>&1 && [[ -n "${DISPLAY:-}" ]]; then
-        zenity --error             --title="NAPS3 — ошибка запуска"             --width=520             --text="NAPS3 не удалось запустить.\n\n$SUMMARY\n\nЖурнал: $LOG_FILE"             >/dev/null 2>&1 || true
-    elif command -v notify-send >/dev/null 2>&1 && [[ -n "${DISPLAY:-}" ]]; then
-        notify-send             "NAPS3 — ошибка запуска"             "Подробности сохранены в $LOG_FILE"             >/dev/null 2>&1 || true
-    fi
-fi
-
-exit "$STATUS"
-EOF
-chmod 755 /usr/local/bin/naps3
+install -m 755 "$SCRIPT_DIR/packaging/naps3-launcher" /usr/local/bin/naps3.new
+mv -f /usr/local/bin/naps3.new /usr/local/bin/naps3
 
 cat >/usr/share/applications/ru.redos.NAPS3.desktop <<'EOF'
 [Desktop Entry]

@@ -42,4 +42,5 @@ jobs:
           bash -n uninstall.sh
           bash -n update_naps3_app.sh
           bash -n packaging/naps3-launcher
+          bash -n packaging/naps3-usb-permissions
           bash -n windows/build_windows.sh

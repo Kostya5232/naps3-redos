@@ -6,6 +6,10 @@ export PYTHONUNBUFFERED=1
 
 LOG_DIR="${HOME}/.cache/naps3"
 LOG_FILE="${LOG_DIR}/startup.log"
+APP_SCRIPT="/usr/libexec/naps3/naps3.py"
+if [[ ! -f "$APP_SCRIPT" && -f /opt/naps3/naps3.py ]]; then
+    APP_SCRIPT="/opt/naps3/naps3.py"
+fi
 mkdir -p "$LOG_DIR"
 touch "$LOG_FILE"
 
@@ -15,11 +19,21 @@ touch "$LOG_FILE"
     echo "User: $(id -un)  Display: ${DISPLAY:-<none>}"
 } >>"$LOG_FILE"
 
-/usr/bin/python3 /usr/libexec/naps3/naps3.py "$@" \
+/usr/bin/python3 "$APP_SCRIPT" "$@" \
     2> >(tee -a "$LOG_FILE" >&2)
 STATUS=$?
 
-if ((STATUS != 0)); then
+CLI_MODE=0
+for argument in "$@"; do
+    case "$argument" in
+        --register-scanner|--registration-api-version|--self-test)
+            CLI_MODE=1
+            break
+            ;;
+    esac
+done
+
+if ((STATUS != 0 && CLI_MODE == 0)); then
     SUMMARY="$(tail -n 12 "$LOG_FILE" | sed 's/[<>&]/ /g')"
 
     if command -v zenity >/dev/null 2>&1 && [[ -n "${DISPLAY:-}" ]]; then

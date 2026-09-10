@@ -5,7 +5,7 @@
 %global _licensedir /usr/share/licenses
 
 Name:           naps3
-Version:        0.8.1
+Version:        0.9.0
 Release:        1.red80
 Summary:        Сканирование документов через SANE и eSCL
 License:        MIT AND BSD-2-Clause
@@ -16,7 +16,7 @@ Requires:       python3-gobject
 Requires:       gtk3
 Requires:       python3-pillow
 Requires:       sane-backends
-Recommends:     sane-backends-drivers-scanners
+Requires:       sane-backends-drivers-scanners
 Requires:       sane-airscan
 Requires:       ipp-usb
 Requires:       poppler-utils
@@ -57,8 +57,10 @@ install -Dpm0644 naps3.svg \
     %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/naps3.svg
 install -Dpm0644 naps3.png \
     %{buildroot}%{_datadir}/icons/hicolor/256x256/apps/naps3.png
-install -Dpm0644 packaging/60-naps3-scanners.rules \
-    %{buildroot}%{_prefix}/lib/udev/rules.d/60-naps3-scanners.rules
+install -Dpm0755 packaging/naps3-usb-permissions \
+    %{buildroot}%{_libexecdir}/naps3/naps3-usb-permissions
+install -Dpm0644 packaging/99-naps3-canon-mf4410.rules \
+    %{buildroot}%{_prefix}/lib/udev/rules.d/99-naps3-canon-mf4410.rules
 
 install -Dpm0644 packaging/ipp-usb-naps3-rpm.service.conf \
     %{buildroot}%{_sysconfdir}/systemd/system/ipp-usb.service.d/90-naps3-m428.conf
@@ -74,13 +76,14 @@ install -Dpm0644 LICENSE.ipp-usb \
 %check
 /usr/bin/python3 -m py_compile naps3.py windows_backend.py
 /usr/bin/bash -n packaging/naps3-launcher
+/usr/bin/bash -n packaging/naps3-usb-permissions
 
 %post
 /usr/bin/systemctl daemon-reload >/dev/null 2>&1 || :
 /usr/bin/systemctl restart ipp-usb.service >/dev/null 2>&1 || :
-/usr/bin/udevadm control --reload-rules >/dev/null 2>&1 || :
-/usr/bin/udevadm trigger --action=add --subsystem-match=usb \
-    --attr-match=idVendor=04a9 --attr-match=idProduct=2737 >/dev/null 2>&1 || :
+/usr/bin/rm -f /etc/udev/rules.d/60-naps3-scanners.rules \
+    /etc/udev/rules.d/99-naps3-canon-mf4410.rules >/dev/null 2>&1 || :
+%{_libexecdir}/naps3/naps3-usb-permissions >/dev/null 2>&1 || :
 /usr/bin/update-desktop-database %{_datadir}/applications >/dev/null 2>&1 || :
 /usr/bin/gtk-update-icon-cache -f %{_datadir}/icons/hicolor >/dev/null 2>&1 || :
 exit 0
@@ -103,6 +106,7 @@ exit 0
 %{_libexecdir}/naps3/naps3.py
 %{_libexecdir}/naps3/windows_backend.py
 %{_libexecdir}/naps3/ipp-usb-naps3
+%{_libexecdir}/naps3/naps3-usb-permissions
 %dir %{_libexecdir}/naps3/ipp-usb-conf
 %{_libexecdir}/naps3/ipp-usb-conf/ipp-usb.conf
 %dir %{_libexecdir}/naps3/ipp-usb-quirks
@@ -110,7 +114,7 @@ exit 0
 %{_datadir}/applications/ru.redos.NAPS3.desktop
 %{_datadir}/icons/hicolor/scalable/apps/naps3.svg
 %{_datadir}/icons/hicolor/256x256/apps/naps3.png
-%{_prefix}/lib/udev/rules.d/60-naps3-scanners.rules
+%{_prefix}/lib/udev/rules.d/99-naps3-canon-mf4410.rules
 %{_sysconfdir}/systemd/system/ipp-usb.service.d/90-naps3-m428.conf
 %doc %{_docdir}/%{name}/README.txt
 %doc %{_docdir}/%{name}/RPM_INSTALL.txt
@@ -118,6 +122,27 @@ exit 0
 %license %{_licensedir}/%{name}/LICENSE.ipp-usb
 
 %changelog
+* Thu Sep 10 2026 NAPS3 contributors <noreply@localhost> - 0.9.0-1.red80
+- Добавлен официальный CLI регистрации выбранного сканера для Printer Doctor.
+- Профиль проверяется по точному SANE ID или eSCL-адресу без общего поиска.
+- Настройки обновляются атомарно с резервной копией и блокировкой открытого GUI.
+- Запись пользовательского профиля от root запрещена.
+
+* Thu Sep 10 2026 NAPS3 contributors <noreply@localhost> - 0.8.4-1.red80
+- Устранена гонка фоновой проверки профиля с запуском SANE-сканирования.
+- Повторный поиск блокирует начало сканирования до завершения.
+- Device busy один раз повторяется на том же выбранном USB-устройстве.
+
+* Thu Sep 10 2026 NAPS3 contributors <noreply@localhost> - 0.8.3-1.red80
+- Повреждённые ответы SANE отбрасываются до передачи страницы в GTK.
+- Устранено повторное открытие окон ошибки предпросмотра.
+- Ограничены очередь сообщений backend, пакет страниц и параллельная обработка.
+- Диагностика USB-прав и отсутствующего backend обобщена для разных сканеров.
+
+* Wed Sep 09 2026 NAPS3 contributors <noreply@localhost> - 0.8.2-1.red80
+- Исправлены права USB Canon MF4410 в удалённых графических сессиях.
+- Правило применяется после системных SANE-правил и к подключённому устройству.
+
 * Wed Sep 09 2026 NAPS3 contributors <noreply@localhost> - 0.8.1-1.red80
 - Удалены автоматический фильтр MFP-YUR и приоритет HP при выборе устройства.
 - Добавлен поиск локальных SANE-сканеров, включая Canon pixma.
