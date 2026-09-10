@@ -214,6 +214,70 @@ class ImageProjectTests(unittest.TestCase):
         self.assertEqual(owner.selected_index, 1)
         self.assertIs(owner.page_list.selected, owner.page_list.rows[1])
 
+    def test_scan_conversion_does_not_publish_truncated_image(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "broken.pnm"
+            target = root / "page.png"
+            source.write_bytes(b"P6\n8 8\n255\n" + b"\x00" * 12)
+            target.write_bytes(b"previous complete page")
+
+            with self.assertRaises((OSError, naps3.Naps3Error)):
+                naps3.MainWindow._convert_stream_document(
+                    SimpleNamespace(), source, target
+                )
+
+            self.assertEqual(target.read_bytes(), b"previous complete page")
+            self.assertFalse(any(root.glob("*.part")))
+
+    def test_flatbed_rejects_incomplete_scan_before_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scan_dir = Path(directory)
+            commands: list[list[str]] = []
+
+            class FakeProcess:
+                returncode = 0
+                stderr = SimpleNamespace(close=lambda: None)
+
+                def communicate(self):
+                    return None, b""
+
+            def fake_popen(command, *, stdout, **_kwargs):
+                commands.append(command)
+                stdout.write(b"P6\n8 8\n255\n" + b"\x00" * 12)
+                stdout.flush()
+                return FakeProcess()
+
+            owner = SimpleNamespace(
+                current_process=None,
+                cancel_requested=False,
+                set_status=lambda *_args: None,
+                _set_device_profile=lambda *_args: None,
+            )
+            owner._convert_stream_document = lambda source, target, lineart=False: (
+                naps3.MainWindow._convert_stream_document(
+                    owner, source, target, lineart
+                )
+            )
+
+            with mock.patch.object(naps3.subprocess, "Popen", side_effect=fake_popen), mock.patch.object(
+                naps3.GLib, "idle_add", side_effect=lambda function, *args: function(*args)
+            ):
+                files, error, _profile = naps3.MainWindow._scan_once(
+                    owner,
+                    scan_dir,
+                    {"device_id": "test:scanner", "connection_kind": "network"},
+                    "Flatbed",
+                    "Color",
+                    150,
+                    "A4",
+                )
+
+            self.assertEqual(files, [])
+            self.assertIn("неполное изображение", error)
+            self.assertFalse((scan_dir / "page-0001.png").exists())
+            self.assertIn("--format=pnm", commands[0])
+
 
 class ExportHarness:
     _load_export_image = naps3.MainWindow._load_export_image

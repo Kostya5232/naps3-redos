@@ -5,7 +5,7 @@
 %global _licensedir /usr/share/licenses
 
 Name:           naps3
-Version:        0.8.2
+Version:        0.8.3
 Release:        1.red80
 Summary:        Сканирование документов через SANE и eSCL
 License:        MIT AND BSD-2-Clause
@@ -122,6 +122,12 @@ exit 0
 %license %{_licensedir}/%{name}/LICENSE.ipp-usb
 
 %changelog
+* Thu Sep 10 2026 NAPS3 contributors <noreply@localhost> - 0.8.3-1.red80
+- Повреждённые ответы SANE отбрасываются до передачи страницы в GTK.
+- Устранено повторное открытие окон ошибки предпросмотра.
+- Ограничены очередь сообщений backend, пакет страниц и параллельная обработка.
+- Диагностика USB-прав и отсутствующего backend обобщена для разных сканеров.
+
 * Wed Sep 09 2026 NAPS3 contributors <noreply@localhost> - 0.8.2-1.red80
 - Исправлены права USB Canon MF4410 в удалённых графических сессиях.
 - Правило применяется после системных SANE-правил и к подключённому устройству.

@@ -25,11 +25,14 @@ NAPS3 — графическое сканирование документов �
 - сохранение защищено временной записью и откатом заменённых файлов;
 - изменения страниц блокируются во время сохранения;
 - при закрытии предлагается сохранить изменённый документ.
+- повреждённые ответы SANE проверяются до добавления страницы в проект;
+- ошибка предпросмотра больше не создаёт повторяющиеся модальные окна.
 """
 
 from __future__ import annotations
 
 import concurrent.futures
+from collections import deque
 import json
 import locale
 import ssl
@@ -112,12 +115,14 @@ except ImportError as exc:
 
 APP_ID = "ru.redos.NAPS3"
 APP_NAME = "NAPS3"
-APP_VERSION = "0.8.2"
+APP_VERSION = "0.8.3"
 DEFAULT_MATCH = ""
 DEFAULT_SCANNER_NAME = "Сканер Windows" if IS_WINDOWS else "Сканер"
 DEFAULT_ESCL_URL = "http://127.0.0.1:60000/eSCL"
 PROFILE_KEY = "scanner_profile"
 LEGACY_DEFAULT_MATCHES = {"mfp-yur"}
+MAX_ADF_PAGES = 200
+MAX_SCAN_PIXELS = 50_000_000
 
 if IS_WINDOWS:
     CONFIG_DIR = Path(
@@ -463,7 +468,23 @@ def friendly_scan_error(raw: str, cancelled: bool = False) -> str:
             )
         return (
             "Нет доступа к USB-сканеру. Установите локальное обновление NAPS3 "
-            "0.8.2 от имени администратора, затем повторите подключение."
+            f"{APP_VERSION} от имени администратора, затем повторите подключение."
+        )
+    if any(
+        marker in lower
+        for marker in (
+            "premature end",
+            "truncated",
+            "broken data stream",
+            "cannot identify image",
+            "неполное изображение",
+            "повреждённое изображение",
+        )
+    ):
+        return (
+            "Сканер передал неполное изображение. Повреждённая страница не "
+            "добавлена в проект. Проверьте USB-кабель, перезапустите МФУ и "
+            "повторите сканирование."
         )
     if "invalid argument" in lower:
         return (
@@ -1413,6 +1434,12 @@ def usb_diagnostic_text() -> str:
                     "Canon MF4410 виден по USB, но backend pixma не создал "
                     "SANE-устройство. Установите пакет "
                     "sane-backends-drivers-scanners и повторите поиск."
+                )
+            elif "found usb scanner" in raw_output.casefold():
+                details.append(
+                    "USB-сканер обнаружен, но SANE не создал устройство. "
+                    "Проверьте права доступа, драйвер производителя и "
+                    "активный backend SANE."
                 )
             else:
                 details.append(f"USB: {output}")
@@ -2437,7 +2464,7 @@ class PageRow(Gtk.ListBoxRow):
                 True,
             )
             image = Gtk.Image.new_from_pixbuf(pixbuf)
-        except GLib.Error:
+        except (GLib.Error, OSError):
             image = icon_image("image-missing-symbolic", Gtk.IconSize.DIALOG)
 
         image.set_halign(Gtk.Align.CENTER)
@@ -2477,6 +2504,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.is_busy = False
         self.cancel_requested = False
         self.scan_sequence = 0
+        self._preview_failures: set[Path] = set()
         self.settings = load_settings()
         stored_profile = self.settings.get(PROFILE_KEY)
         self.scanner_profile: Optional[dict[str, object]] = (
@@ -4675,23 +4703,24 @@ class MainWindow(Gtk.ApplicationWindow):
             scan_dir / f"page-{index:04d}.png"
             for index in range(1, len(raw_files) + 1)
         ]
-        workers = min(3, max(1, len(raw_files)))
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=workers
-        ) as executor:
-            futures = [
-                executor.submit(
-                    self._convert_stream_document,
-                    raw,
-                    target,
-                    mode == "Lineart",
-                )
-                for raw, target in zip(raw_files, targets)
-            ]
-            files = [future.result() for future in futures]
-
-        for raw_file in raw_files:
-            raw_file.unlink(missing_ok=True)
+        workers = 1 if dpi >= 600 else min(2, max(1, len(raw_files)))
+        try:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=workers
+            ) as executor:
+                futures = [
+                    executor.submit(
+                        self._convert_stream_document,
+                        raw,
+                        target,
+                        mode == "Lineart",
+                    )
+                    for raw, target in zip(raw_files, targets)
+                ]
+                files = [future.result() for future in futures]
+        finally:
+            for raw_file in raw_files:
+                raw_file.unlink(missing_ok=True)
 
         if process.returncode != 0:
             append_scan_log(
@@ -4795,11 +4824,12 @@ class MainWindow(Gtk.ApplicationWindow):
         )
 
         if source == "Flatbed":
+            raw_path = scan_dir / "raw-flatbed.pnm"
             output_path = scan_dir / "page-0001.png"
-            command = [*base_command, "--format=png"]
+            command = [*base_command, "--format=pnm"]
             GLib.idle_add(self.set_status, "Сканирование со стекла…")
 
-            with output_path.open("wb") as output_file:
+            with raw_path.open("wb") as output_file:
                 process = subprocess.Popen(
                     command,
                     stdout=output_file,
@@ -4816,23 +4846,50 @@ class MainWindow(Gtk.ApplicationWindow):
                     if self.current_process is process:
                         self.current_process = None
 
+            return_code = process.returncode
+
             if self.cancel_requested:
+                raw_path.unlink(missing_ok=True)
                 output_path.unlink(missing_ok=True)
                 raise Naps3Error("Сканирование отменено пользователем.")
 
-            if output_path.exists() and output_path.stat().st_size:
-                if software_lineart:
+            error = safe_decode(stderr).strip()
+            if return_code != 0:
+                raw_path.unlink(missing_ok=True)
+                output_path.unlink(missing_ok=True)
+                if not error:
+                    error = f"scanimage завершился с кодом {return_code}."
+                append_scan_log(
+                    "SANE flatbed failed "
+                    f"rc={return_code}: {compact_details(error, 500)}"
+                )
+                return [], error, profile
+
+            if raw_path.exists() and raw_path.stat().st_size:
+                try:
                     self._convert_stream_document(
+                        raw_path,
                         output_path,
-                        output_path,
-                        lineart=True,
+                        lineart=software_lineart,
                     )
+                except Exception as exc:  # noqa: BLE001
+                    output_path.unlink(missing_ok=True)
+                    error = (
+                        "Сканер передал неполное изображение: "
+                        f"{compact_details(exc, 500)}"
+                    )
+                    append_scan_log(
+                        f"SANE flatbed rejected image: {compact_details(exc, 500)}"
+                    )
+                    return [], error, profile
+                finally:
+                    raw_path.unlink(missing_ok=True)
                 append_scan_log(
                     f"SANE flatbed complete bytes={output_path.stat().st_size}"
                 )
                 return [output_path], "", profile
 
-            error = safe_decode(stderr).strip()
+            raw_path.unlink(missing_ok=True)
             append_scan_log(f"SANE flatbed failed: {compact_details(error, 500)}")
             return [], error, profile
 
@@ -4845,6 +4902,7 @@ class MainWindow(Gtk.ApplicationWindow):
             f"--batch={scan_dir / 'raw-%04d.pnm'}",
             "--batch-start=1",
             "--batch-increment=1",
+            f"--batch-count={MAX_ADF_PAGES}",
             "--batch-print",
         ]
 
@@ -4866,7 +4924,7 @@ class MainWindow(Gtk.ApplicationWindow):
             start_new_session=True,
         )
         self.current_process = process
-        output_lines: list[str] = []
+        output_lines: deque[str] = deque(maxlen=30)
 
         try:
             assert process.stdout is not None
@@ -4874,23 +4932,25 @@ class MainWindow(Gtk.ApplicationWindow):
                 line_text = line.rstrip()
                 output_lines.append(line_text)
                 if line_text:
-                    if any(
+                    is_progress = any(
                         marker in line_text.casefold()
                         for marker in (
                             "scanning page",
                             "scanned page",
                             "batch terminated",
+                            "document feeder out of documents",
                         )
-                    ):
+                    )
+                    if is_progress:
                         append_scan_log(
                             "SANE ADF progress "
                             f"elapsed={time.monotonic() - started:.2f}s "
                             f"message={compact_details(line_text, 300)}"
                         )
-                    GLib.idle_add(
-                        self.set_status,
-                        translate_scan_status(line_text),
-                    )
+                        GLib.idle_add(
+                            self.set_status,
+                            translate_scan_status(line_text),
+                        )
 
             return_code = process.wait()
         finally:
@@ -4914,23 +4974,24 @@ class MainWindow(Gtk.ApplicationWindow):
                 scan_dir / f"page-{index:04d}.png"
                 for index in range(1, len(raw_files) + 1)
             ]
-            workers = min(3, max(1, len(raw_files)))
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=workers
-            ) as executor:
-                futures = [
-                    executor.submit(
-                        self._convert_stream_document,
-                        raw,
-                        target,
-                        software_lineart,
-                    )
-                    for raw, target in zip(raw_files, targets)
-                ]
-                files = [future.result() for future in futures]
-
-            for raw_file in raw_files:
-                raw_file.unlink(missing_ok=True)
+            workers = 1 if dpi >= 600 else min(2, max(1, len(raw_files)))
+            try:
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=workers
+                ) as executor:
+                    futures = [
+                        executor.submit(
+                            self._convert_stream_document,
+                            raw,
+                            target,
+                            software_lineart,
+                        )
+                        for raw, target in zip(raw_files, targets)
+                    ]
+                    files = [future.result() for future in futures]
+            finally:
+                for raw_file in raw_files:
+                    raw_file.unlink(missing_ok=True)
 
             append_scan_log(
                 "SANE ADF complete "
@@ -4939,7 +5000,7 @@ class MainWindow(Gtk.ApplicationWindow):
             )
             return files, "", profile
 
-        error = "\n".join(output_lines[-30:])
+        error = "\n".join(output_lines)
         append_scan_log(
             f"SANE ADF failed rc={return_code}: {compact_details(error, 800)}"
         )
@@ -4951,29 +5012,58 @@ class MainWindow(Gtk.ApplicationWindow):
         target_path: Path,
         lineart: bool = False,
     ) -> Path:
-        with Image.open(source_path) as source_image:
-            image = ImageOps.exif_transpose(source_image).copy()
-        if lineart:
-            grayscale = ImageOps.grayscale(image)
+        temporary = target_path.with_name(
+            f".{target_path.name}.{uuid.uuid4().hex}.part"
+        )
+        image = None
+        try:
+            with Image.open(source_path) as source_image:
+                width, height = source_image.size
+                pixel_count = width * height
+                if width <= 0 or height <= 0 or pixel_count > MAX_SCAN_PIXELS:
+                    raise Naps3Error(
+                        "Сканер передал недопустимый размер изображения: "
+                        f"{width} × {height} пикс."
+                    )
+                # Fully decode the stream before GTK sees it. Pillow raises
+                # here for a truncated PNM, PNG, JPEG or TIFF page.
+                source_image.load()
+                image = ImageOps.exif_transpose(source_image).copy()
+
+            if lineart:
+                grayscale = ImageOps.grayscale(image)
+                image.close()
+                image = grayscale.point(
+                    [0] * 128 + [255] * 128,
+                    mode="1",
+                )
+                grayscale.close()
+            elif image.mode not in {"RGB", "L"}:
+                converted = image.convert("RGB")
+                image.close()
+                image = converted
+
+            # Publish only a complete PNG. If conversion or disk I/O fails,
+            # an existing target stays intact and GTK never sees a partial file.
+            image.save(temporary, format="PNG", compress_level=2)
             image.close()
-            image = grayscale.point(
-                [0] * 128 + [255] * 128,
-                mode="1",
-            )
-            grayscale.close()
-        elif image.mode not in {"RGB", "L"}:
-            converted = image.convert("RGB")
-            image.close()
-            image = converted
-        # A low compression level is much faster and fully sufficient for the
-        # working cache. Final PDF/TIFF/JPEG export applies its own settings.
-        image.save(target_path, format="PNG", compress_level=2)
-        image.close()
-        if not target_path.exists() or target_path.stat().st_size == 0:
-            raise Naps3Error(
-                f"Не удалось подготовить страницу {target_path.name}."
-            )
-        return target_path
+            image = None
+            if not temporary.exists() or temporary.stat().st_size == 0:
+                raise Naps3Error(
+                    f"Не удалось подготовить страницу {target_path.name}."
+                )
+            with Image.open(temporary) as prepared_image:
+                prepared_image.load()
+                if prepared_image.size != (width, height):
+                    raise Naps3Error(
+                        f"Не удалось проверить страницу {target_path.name}."
+                    )
+            os.replace(temporary, target_path)
+            return target_path
+        finally:
+            if image is not None:
+                image.close()
+            temporary.unlink(missing_ok=True)
 
     def _scan_direct_escl(
         self,
@@ -5359,23 +5449,24 @@ class MainWindow(Gtk.ApplicationWindow):
             scan_dir / f"page-{index:04d}.png"
             for index in range(1, len(raw_files) + 1)
         ]
-        workers = min(3, max(1, len(raw_files)))
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=workers
-        ) as executor:
-            futures = [
-                executor.submit(
-                    self._convert_stream_document,
-                    raw,
-                    target,
-                    mode == "Lineart",
-                )
-                for raw, target in zip(raw_files, targets)
-            ]
-            files = [future.result() for future in futures]
-
-        for raw_file in raw_files:
-            raw_file.unlink(missing_ok=True)
+        workers = 1 if dpi >= 600 else min(2, max(1, len(raw_files)))
+        try:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=workers
+            ) as executor:
+                futures = [
+                    executor.submit(
+                        self._convert_stream_document,
+                        raw,
+                        target,
+                        mode == "Lineart",
+                    )
+                    for raw, target in zip(raw_files, targets)
+                ]
+                files = [future.result() for future in futures]
+        finally:
+            for raw_file in raw_files:
+                raw_file.unlink(missing_ok=True)
 
         append_scan_log(
             "eSCL stream complete "
@@ -5754,6 +5845,16 @@ class MainWindow(Gtk.ApplicationWindow):
         assert self.selected_index is not None
         page = self.pages[self.selected_index]
 
+        if page.path in self._preview_failures:
+            self.preview_image.clear()
+            self.preview_title.set_markup(
+                f"<b>Предпросмотр — страница {self.selected_index + 1}</b>"
+            )
+            self.preview_info.set_text(
+                "Файл страницы повреждён или записан не полностью."
+            )
+            return
+
         try:
             width = max(self.preview_event.get_allocated_width() - 50, 180)
             height = max(self.preview_event.get_allocated_height() - 50, 180)
@@ -5794,12 +5895,25 @@ class MainWindow(Gtk.ApplicationWindow):
                 self.preview_info.set_text(
                     f"{source_image.width} × {source_image.height} пикс."
                 )
+            self._preview_failures.discard(page.path)
         except (GLib.Error, OSError) as exc:
             self.preview_image.clear()
-            self.show_error(
-                "Не удалось показать страницу",
-                friendly_general_error(exc, "открыть изображение"),
+            first_failure = page.path not in self._preview_failures
+            self._preview_failures.add(page.path)
+            self.preview_title.set_markup(
+                f"<b>Предпросмотр — страница {self.selected_index + 1}</b>"
             )
+            self.preview_info.set_text(
+                "Файл страницы повреждён или записан не полностью."
+            )
+            if first_failure:
+                append_scan_log(
+                    "Preview rejected damaged page "
+                    f"path={page.path.name}: {compact_details(exc, 400)}"
+                )
+                self.set_status(
+                    "Повреждённая страница не показана. Повторите сканирование."
+                )
 
     @property
     def zoom_factor(self) -> float:
