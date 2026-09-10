@@ -5,7 +5,7 @@
 %global _licensedir /usr/share/licenses
 
 Name:           naps3
-Version:        0.8.3
+Version:        0.8.4
 Release:        1.red80
 Summary:        Сканирование документов через SANE и eSCL
 License:        MIT AND BSD-2-Clause
@@ -122,6 +122,11 @@ exit 0
 %license %{_licensedir}/%{name}/LICENSE.ipp-usb
 
 %changelog
+* Thu Sep 10 2026 NAPS3 contributors <noreply@localhost> - 0.8.4-1.red80
+- Устранена гонка фоновой проверки профиля с запуском SANE-сканирования.
+- Повторный поиск блокирует начало сканирования до завершения.
+- Device busy один раз повторяется на том же выбранном USB-устройстве.
+
 * Thu Sep 10 2026 NAPS3 contributors <noreply@localhost> - 0.8.3-1.red80
 - Повреждённые ответы SANE отбрасываются до передачи страницы в GTK.
 - Устранено повторное открытие окон ошибки предпросмотра.

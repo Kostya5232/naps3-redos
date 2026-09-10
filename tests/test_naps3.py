@@ -85,6 +85,50 @@ class EsclParsingTests(unittest.TestCase):
 
 
 class LocalScannerDiscoveryTests(unittest.TestCase):
+    def test_local_sane_busy_retries_same_selected_device_once(self) -> None:
+        profile = {
+            "name": "Canon MF4410",
+            "device_id": "pixma:04A92737_000000000000",
+            "connection_kind": "usb-sane",
+        }
+        page = Path("page-0001.png")
+        scan_once = mock.Mock(
+            side_effect=[
+                ([], "scanimage: open of device failed: Device busy", profile),
+                ([page], "", profile),
+            ]
+        )
+        owner = SimpleNamespace(
+            cancel_requested=False,
+            _scan_once=scan_once,
+            _device_busy_error=naps3.MainWindow._device_busy_error,
+            set_status=lambda *_args: None,
+        )
+
+        with mock.patch.object(naps3.time, "sleep") as sleep, mock.patch.object(
+            naps3, "append_scan_log"
+        ), mock.patch.object(
+            naps3.GLib, "idle_add",
+            side_effect=lambda function, *args: function(*args),
+        ):
+            files, returned_profile = naps3.MainWindow._scan_worker(
+                owner,
+                Path("scan"),
+                "",
+                "Flatbed",
+                "Color",
+                150,
+                "A4",
+                profile,
+                False,
+            )
+
+        self.assertEqual(files, [page])
+        self.assertEqual(returned_profile, profile)
+        self.assertEqual(scan_once.call_count, 2)
+        self.assertFalse(scan_once.call_args_list[1].kwargs["force_resolve_device"])
+        sleep.assert_called_once_with(1.0)
+
     def test_legacy_hp_filter_is_removed(self) -> None:
         self.assertEqual(naps3.normalized_match_filter("MFP-YUR"), "")
         self.assertEqual(

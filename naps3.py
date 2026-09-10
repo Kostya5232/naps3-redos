@@ -27,6 +27,8 @@ NAPS3 — графическое сканирование документов �
 - при закрытии предлагается сохранить изменённый документ.
 - повреждённые ответы SANE проверяются до добавления страницы в проект;
 - ошибка предпросмотра больше не создаёт повторяющиеся модальные окна.
+- фоновая проверка устройства больше не пересекается со сканированием;
+- локальный SANE один раз повторяет запуск при кратком ответе Device busy.
 """
 
 from __future__ import annotations
@@ -115,7 +117,7 @@ except ImportError as exc:
 
 APP_ID = "ru.redos.NAPS3"
 APP_NAME = "NAPS3"
-APP_VERSION = "0.8.3"
+APP_VERSION = "0.8.4"
 DEFAULT_MATCH = ""
 DEFAULT_SCANNER_NAME = "Сканер Windows" if IS_WINDOWS else "Сканер"
 DEFAULT_ESCL_URL = "http://127.0.0.1:60000/eSCL"
@@ -2503,6 +2505,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.current_escl_response: Optional[object] = None
         self.is_busy = False
         self.cancel_requested = False
+        self._profile_probe_token: Optional[object] = None
         self.scan_sequence = 0
         self._preview_failures: set[Path] = set()
         self.settings = load_settings()
@@ -3906,6 +3909,14 @@ class MainWindow(Gtk.ApplicationWindow):
             self._probe_saved_profile_async()
             return
 
+        self.set_busy(
+            True,
+            (
+                "Проверка сканеров Windows WIA…"
+                if IS_WINDOWS
+                else "Проверка локального USB-подключения…"
+            ),
+        )
         self._set_device_status(
             "checking",
             "Проверка",
@@ -3949,11 +3960,18 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _probe_saved_profile_async(self) -> None:
         profile = dict(self.scanner_profile or {})
+        probe_token = object()
+        self._profile_probe_token = probe_token
+        self.set_busy(True, "Проверка сохранённого сканера…")
 
         def ready(error: str) -> bool:
             # A delayed startup probe must not replace a subsequent manual
             # selection or change the status of a scan already in progress.
-            if self.scanner_profile != profile or self.is_busy:
+            if self._profile_probe_token is not probe_token:
+                return False
+            self._profile_probe_token = None
+            self.set_busy(False)
+            if self.scanner_profile != profile:
                 return False
             return self._saved_profile_probe_ready(
                 {} if error else profile, error, False
@@ -4094,6 +4112,7 @@ class MainWindow(Gtk.ApplicationWindow):
         if self.is_busy:
             return
 
+        self.set_busy(True, "Поиск USB-сканера…")
         self._set_device_status(
             "checking",
             "Поиск",
@@ -4128,6 +4147,7 @@ class MainWindow(Gtk.ApplicationWindow):
         error: str,
         success_status: str,
     ) -> bool:
+        self.set_busy(False)
         if error:
             self._set_device_status(
                 "error",
@@ -4613,6 +4633,19 @@ class MainWindow(Gtk.ApplicationWindow):
                 "0x8021000a",  # WIA_ERROR_DEVICE_COMMUNICATION
                 "0x8021000d",  # WIA_ERROR_DEVICE_LOCKED
                 "0x80210015",  # WIA_S_NO_DEVICE_AVAILABLE
+            )
+        )
+
+    @staticmethod
+    def _device_busy_error(raw: str) -> bool:
+        lower = raw.casefold()
+        return any(
+            marker in lower
+            for marker in (
+                "device busy",
+                "resource busy",
+                "sane_status_device_busy",
+                "status = busy",
             )
         )
 
@@ -5635,6 +5668,40 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         if files:
             return files, profile
+
+        if self.cancel_requested:
+            raise Naps3Error("Сканирование отменено пользователем.")
+
+        connection_kind = str(profile.get("connection_kind") or "")
+        if (
+            self._device_busy_error(error)
+            and connection_kind in {"usb", "usb-hpaio", "usb-sane"}
+        ):
+            GLib.idle_add(
+                self.set_status,
+                "Сканер освобождается; повтор на выбранном устройстве…",
+            )
+            append_scan_log(
+                "SANE busy retry for exact selected device "
+                f"name={profile_name(profile)} "
+                f"device={profile.get('device_id', '')}: "
+                f"{compact_details(error, 600)}"
+            )
+            time.sleep(1.0)
+            if self.cancel_requested:
+                raise Naps3Error("Сканирование отменено пользователем.")
+            files, second_error, profile = self._scan_once(
+                scan_dir,
+                profile,
+                source,
+                mode,
+                dpi,
+                paper,
+                force_resolve_device=False,
+            )
+            if files:
+                return files, profile
+            error = second_error
 
         if self.cancel_requested:
             raise Naps3Error("Сканирование отменено пользователем.")

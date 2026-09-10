@@ -45,6 +45,7 @@ class ScannerRecoveryTests(PatchedTestCase):
             _scan_windows_wia=mock.Mock(),
             _scan_direct_escl=mock.Mock(),
             _retryable_device_error=naps3.MainWindow._retryable_device_error,
+            _device_busy_error=naps3.MainWindow._device_busy_error,
         )
         self.open_error = (
             "scanimage: open of device airscan:e0:Kyocera ECOSYS MA4000x "
@@ -256,6 +257,11 @@ class StartupProfileTests(PatchedTestCase):
             _save_ui_settings=mock.Mock(),
             set_status=mock.Mock(),
         )
+        self.owner.set_busy = mock.Mock(
+            side_effect=lambda busy, *_args, **_kwargs: setattr(
+                self.owner, "is_busy", busy
+            )
+        )
         self.owner._saved_profile_probe_ready = (
             lambda *args: naps3.MainWindow._saved_profile_probe_ready(self.owner, *args)
         )
@@ -392,14 +398,16 @@ class StartupProfileTests(PatchedTestCase):
         self.owner._save_ui_settings.assert_not_called()
         self.owner.set_status.assert_not_called()
 
-    def test_late_probe_does_not_update_ui_during_scan(self):
-        self.probe.return_value = False
+    def test_saved_probe_blocks_scan_until_it_finishes(self):
         naps3.MainWindow._probe_saved_profile_async(self.owner)
-        self.owner.is_busy = True
+        self.assertTrue(self.owner.is_busy)
         self.finish_probe()
+        self.assertFalse(self.owner.is_busy)
         self.assertEqual(self.owner.scanner_profile, self.selected)
-        self.owner._set_device_profile.assert_not_called()
-        self.owner.set_status.assert_not_called()
+        self.assertEqual(
+            [call.args[0] for call in self.owner.set_busy.call_args_list],
+            [True, False],
+        )
 
 
 if __name__ == "__main__":
