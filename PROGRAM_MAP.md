@@ -1,6 +1,6 @@
 # Карта программы NAPS3
 
-Карта текущего исходного кода версии **0.8.4** с поддержкой РЕД ОС и Windows, обновлена 10 сентября 2026 года. Источники: граф codebase-memory-mcp, реализации функций, тесты, установочные скрипты и конфигурации пакетов.
+Карта текущего исходного кода версии **0.9.0** с поддержкой РЕД ОС и Windows, обновлена 10 сентября 2026 года. Источники: граф codebase-memory-mcp, реализации функций, тесты, установочные скрипты и конфигурации пакетов.
 
 NAPS3 — настольное приложение для сканирования документов на РЕД ОС 8 и Windows 10/11. Пользователь подключает сканер, получает страницы со стекла или автоподатчика, меняет их порядок и ориентацию, затем сохраняет PDF, TIFF или отдельные файлы. Изображения и PDF также можно импортировать. Интерфейс и модель документа общие; меняется только системный backend сканера.
 
@@ -13,6 +13,9 @@ NAPS3 — настольное приложение для сканирован�
 ```mermaid
 flowchart TD
     Launch["Ярлык / команда naps3"] --> Main["main → Naps3Application"]
+    Doctor["Printer Doctor 1.0.7"] --> Register["--register-scanner"]
+    Register --> Profile
+    Register --> Settings
     Main --> UI["MainWindow · GTK 3"]
     Settings["settings.json: параметры и профиль"] <--> UI
     UI --> Discovery["Поиск сканера и проверка возможностей"]
@@ -51,9 +54,10 @@ flowchart TD
 | [windows/installer.nsi](windows/installer.nsi), [windows/build_installer.ps1](windows/build_installer.ps1) | Бесплатный пользовательский установщик NSIS, переносной ZIP и SHA-256. |
 | [.github/workflows/windows.yml](.github/workflows/windows.yml) | Тесты и пробная сборка Windows в MSYS2 UCRT64. |
 | [README.md](README.md) | Публичная страница проекта и команды установки из GitHub Release или DNF-репозитория. |
-| [tests/test_naps3.py](tests/test_naps3.py) | 24 теста: разбор eSCL/SANE, поиск Canon pixma, ручной дуплекс, экспорт, отмена и работа со страницами. |
-| [tests/test_scanner_recovery.py](tests/test_scanner_recovery.py) | 21 тест сохранения выбранного устройства, миграции старого профиля HP и фоновой проверки при запуске. |
+| [tests/test_naps3.py](tests/test_naps3.py) | 27 тестов: разбор eSCL/SANE, поиск Canon pixma, ручной дуплекс, экспорт, отмена и работа со страницами. |
+| [tests/test_scanner_recovery.py](tests/test_scanner_recovery.py) | 24 теста сохранения выбранного устройства, миграции старого профиля HP и фоновой проверки при запуске. |
 | [tests/test_save_safety.py](tests/test_save_safety.py) | 30 тестов защиты файлов, блокировки редактирования, учёта несохранённых изменений и закрытия. |
+| [tests/test_registration_cli.py](tests/test_registration_cli.py) | 5 тестов точной регистрации USB/сети, сохранения остальных настроек, атомарной записи, запрета root и блокировки открытого GUI. |
 | `diagnostics/` | Локальные журналы, резервные копии и отчёты проверок. Каталог исключён из публичного Git-репозитория. |
 | [tests/gtk_smoke.py](tests/gtk_smoke.py) | Проверка настоящего окна GTK с тестовыми страницами и отключённым поиском оборудования. |
 | [packaging/naps3.spec](packaging/naps3.spec) | Состав RPM, системные зависимости, проверки сборки и действия при установке/удалении. |
@@ -62,7 +66,7 @@ flowchart TD
 | [packaging/99-naps3-canon-mf4410.rules](packaging/99-naps3-canon-mf4410.rules) | Позднее правило доступа только к Canon MF4410 с USB ID `04a9:2737`. |
 | [packaging/naps3-usb-permissions](packaging/naps3-usb-permissions) | Немедленно применяет правило к уже подключённому Canon, включая удалённые графические сессии. |
 | [build_rpm.sh](build_rpm.sh) | Сборка RPM для x86_64, размещение результата и контрольной суммы в `dist/`. |
-| [.github/workflows/checks.yml](.github/workflows/checks.yml) | Проверка синтаксиса, 86 модульных тестов, GTK smoke-тест и проверка shell-скриптов при каждом обновлении `main`. |
+| [.github/workflows/checks.yml](.github/workflows/checks.yml) | Проверка синтаксиса, 92 модульных теста, GTK smoke-тест и проверка shell-скриптов при каждом обновлении `main`. |
 | [.github/workflows/release.yml](.github/workflows/release.yml) | По тегу `v*` повторяет тесты, собирает RPM, создаёт GitHub Release и запускает публикацию DNF. |
 | [.github/workflows/pages.yml](.github/workflows/pages.yml) | Создаёт метаданные DNF из последнего выпуска и публикует их через GitHub Pages. |
 | [install_redos8.sh](install_redos8.sh) | Ручная установка в `/opt/naps3`, зависимости и настройка службы ipp-usb. |
@@ -83,7 +87,7 @@ flowchart TD
 ```mermaid
 flowchart LR
     MainBranch["Ветка main"] --> Checks["checks.yml · тесты"]
-    Tag["Тег v0.8.4"] --> Release["release.yml"]
+    Tag["Тег v0.9.0"] --> Release["release.yml"]
     Release --> Tests["Linux + Windows тесты"]
     Tests --> Build["RPM + Windows EXE/ZIP"]
     Build --> Assets["GitHub Release · пакеты + SHA-256"]
@@ -110,7 +114,7 @@ flowchart LR
 | Ошибки и диагностика | [friendly_general_error](naps3.py#L345), [friendly_scan_error](naps3.py#L379), [append_scan_log](naps3.py#L472) | Русские сообщения и технический журнал сканирования. |
 | Завершение процесса | [terminate_subprocess](naps3.py#L483) | Остановка группы backend-процессов с принудительным завершением при необходимости. |
 | Разбор eSCL | [parse_escl_state](naps3.py#L528), [parse_escl_jobs](naps3.py#L595), [escl_job_is_drained](naps3.py#L658) | Разбор XML, поиск текущего задания, проверка получения всех изображений. |
-| Настройки | [load_settings](naps3.py#L671), [save_settings](naps3.py#L678) | Чтение и запись JSON. |
+| Настройки | [load_settings](naps3.py#L777), [save_settings](naps3.py#L784), [acquire_settings_lock](naps3.py#L814) | Чтение JSON, атомарная запись, резервные копии и межпроцессная блокировка. |
 | Конфигурация SANE | [ensure_fast_sane_config](naps3.py#L686), [profile_environment](naps3.py#L746), [prepare_limited_sane_config](naps3.py#L959) | Конфигурации с ограниченным набором backend и явным адресом устройства. |
 | Возможности устройства | [fetch_escl_capabilities](naps3.py#L774), [parse_escl_adf_capabilities](naps3.py#L817) | Определение модели, наличия АПД, дуплекса и поддерживаемых разрешений. |
 | Обнаружение и профили | [discover_usb_scanners](naps3.py#L1058), [discover_network_scanners](naps3.py#L1188), [build_network_profile](naps3.py#L1208), [discover_scanner_profile](naps3.py#L1733), [resolve_profile_device](naps3.py#L1779) | Поиск USB/сети, выбор устройства, создание и восстановление профиля. |
@@ -126,7 +130,8 @@ flowchart LR
 | Импорт | [import_images](naps3.py#L5361), [import_pdf](naps3.py#L5439) | Преобразование входных файлов в PNG сессии. |
 | Экспорт | [export_pages](naps3.py#L5537), [_save_image](naps3.py#L5828), [_export_worker](naps3.py#L5869) | Выбор файлов назначения и запись документа/изображений через Pillow. |
 | Состояние и выход | [set_busy](naps3.py#L6004), [do_delete_event](naps3.py#L6054) | Доступность кнопок, отмена при закрытии и сохранение параметров. |
-| Запуск | [Naps3Application](naps3.py#L6086), [check_runtime](naps3.py#L6109), [main](naps3.py#L6121) | Проверка окружения и запуск приложения GTK. |
+| Интеграция | [register_scanner_profile](naps3.py#L1686), [run_registration_cli](naps3.py#L7135) | Проверка точного устройства и безопасная регистрация профиля из Printer Doctor. |
+| Запуск | [Naps3Application](naps3.py#L7054), [check_runtime](naps3.py#L7094), [main](naps3.py#L7244) | Блокировка настроек GUI, проверка окружения, CLI и запуск GTK. |
 
 ## Основные сценарии
 
@@ -210,7 +215,7 @@ GTK обслуживает окно в главном потоке. Поиск �
 
 RPM размещает приложение в `/usr/libexec/naps3`, а команду запуска — в `/usr/bin/naps3`. Ручная установка использует `/opt/naps3` и `/usr/local/bin/naps3`. Обе подключают поставляемый ipp-usb через systemd drop-in. Само приложение работает от обычного пользователя; настройку службы выполняют установочные средства.
 
-Реализация внутри бинарника `ipp-usb-naps3` не исследована: исходники отсутствуют. Его роль установлена по конфигурации, скриптам и комментариям проекта. Версия 0.8.4 включает этот ранее использовавшийся Linux-бинарник без изменений.
+Реализация внутри бинарника `ipp-usb-naps3` не исследована: исходники отсутствуют. Его роль установлена по конфигурации, скриптам и комментариям проекта. Версия 0.9.0 включает этот ранее использовавшийся Linux-бинарник без изменений.
 
 ## Проверки и границы карты
 
@@ -224,6 +229,7 @@ RPM размещает приложение в `/usr/libexec/naps3`, а кома
 | `ScannerRecoveryTests`, `StartupProfileTests` | Отсутствие перехода с Kyocera на HP, обновление SANE-идентификатора по прежнему адресу, сохранение профиля при недоступности и защита от запоздалой проверки. |
 | `WindowsBackendTests` | JSON-протокол WIA, коды HRESULT, возможности профиля, фильтрация и передача точного DeviceID. |
 | `SafeExportTests`, `DocumentSafetyTests` | Сбои записи и замены файлов, откат, защита рабочих страниц, порядок экспорта, все форматы, изменения документа и сохранение перед закрытием. |
+| `RegistrationCliTests` | Точный SANE ID и сетевой адрес, сохранение чужих параметров, атомарная замена, запрет root и отказ при открытом GUI. |
 | `gtk_smoke.py` | Создание окна, страницы и поворот, блокировка кнопок во время операции, доступность аппаратного/ручного дуплекса. |
 
 Для запуска из корня проекта на Linux с установленными зависимостями:
@@ -235,6 +241,6 @@ PYTHONPATH=. python3 tests/gtk_smoke.py
 
 Для второй команды нужен доступный дисплей GTK; допускается виртуальный дисплей. Сборка RPM дополнительно выполняет `py_compile` приложения и проверку синтаксиса оболочки запуска.
 
-Для версии 0.8.4 подготовлены 87 модульных проверок: защита сохранения, восстановление выбранного устройства, Windows WIA, общий SANE-поиск, Canon MF4410 через `pixma`, атомарная подготовка изображения, отбрасывание оборванного PNM и однократный повтор занятого SANE-устройства. Обращения к физическим сканерам в тестах заменены управляемыми ответами, поэтому окончательная проверка подачи бумаги и USB-обмена остаётся аппаратной.
+Для версии 0.9.0 подготовлены 92 модульные проверки: защита сохранения, восстановление выбранного устройства, Windows WIA, общий SANE-поиск, Canon MF4410 через `pixma`, атомарная подготовка изображения, отбрасывание оборванного PNM, однократный повтор занятого SANE-устройства и безопасная регистрация из Printer Doctor. Обращения к физическим сканерам в тестах заменены управляемыми ответами, поэтому окончательная проверка подачи бумаги и USB-обмена остаётся аппаратной.
 
 Индекс графа не включает `dist/`; содержимое этого каталога и установочные файлы проверены отдельно. Связи GTK через сигналы и фоновые callback уточнены по исходникам, поскольку граф вызовов отражает их не полностью.

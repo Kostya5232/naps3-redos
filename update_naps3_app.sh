@@ -17,6 +17,9 @@ UDEV_RULE_SOURCE="$SCRIPT_DIR/packaging/99-naps3-canon-mf4410.rules"
 [[ -s "$UDEV_RULE_SOURCE" ]] || { echo "Не найден $UDEV_RULE_SOURCE" >&2; exit 1; }
 PERMISSION_HELPER="$SCRIPT_DIR/packaging/naps3-usb-permissions"
 [[ -x "$PERMISSION_HELPER" ]] || { echo "Не найден $PERMISSION_HELPER" >&2; exit 1; }
+LAUNCHER_SOURCE="$SCRIPT_DIR/packaging/naps3-launcher"
+[[ -x "$LAUNCHER_SOURCE" ]] || { echo "Не найден $LAUNCHER_SOURCE" >&2; exit 1; }
+/usr/bin/bash -n "$LAUNCHER_SOURCE"
 
 VERSION="$(sed -nE 's/^APP_VERSION = "([^"]+)"/\1/p' "$SOURCE" | head -n 1)"
 [[ -n "$VERSION" ]] || { echo "Не удалось определить версию." >&2; exit 1; }
@@ -56,9 +59,20 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP="${TARGET}.backup-${STAMP}"
 BACKEND_TARGET="$(dirname "$TARGET")/windows_backend.py"
 BACKEND_BACKUP="${BACKEND_TARGET}.backup-${STAMP}"
+if [[ "$TARGET" == /usr/libexec/naps3/naps3.py ]]; then
+    LAUNCHER_TARGET=/usr/bin/naps3
+else
+    LAUNCHER_TARGET=/usr/local/bin/naps3
+fi
+LAUNCHER_BACKUP="${LAUNCHER_TARGET}.backup-${STAMP}"
+LAUNCHER_EXISTED=0
 cp -a "$TARGET" "$BACKUP"
 if [[ -f "$BACKEND_TARGET" ]]; then
     cp -a "$BACKEND_TARGET" "$BACKEND_BACKUP"
+fi
+if [[ -f "$LAUNCHER_TARGET" ]]; then
+    LAUNCHER_EXISTED=1
+    cp -a "$LAUNCHER_TARGET" "$LAUNCHER_BACKUP"
 fi
 
 pkill -f "$TARGET" 2>/dev/null || true
@@ -66,13 +80,20 @@ sleep 1
 
 install -m 0755 "$SOURCE" "${TARGET}.new"
 install -m 0644 "$BACKEND_SOURCE" "${BACKEND_TARGET}.new"
+install -m 0755 "$LAUNCHER_SOURCE" "${LAUNCHER_TARGET}.new"
 mv -f "${TARGET}.new" "$TARGET"
 mv -f "${BACKEND_TARGET}.new" "$BACKEND_TARGET"
+mv -f "${LAUNCHER_TARGET}.new" "$LAUNCHER_TARGET"
 rm -rf "$(dirname "$TARGET")/__pycache__"
 if ! /usr/bin/python3 -m py_compile "$TARGET" "$BACKEND_TARGET"; then
     cp -a "$BACKUP" "$TARGET"
     if [[ -f "$BACKEND_BACKUP" ]]; then
         cp -a "$BACKEND_BACKUP" "$BACKEND_TARGET"
+    fi
+    if [[ -f "$LAUNCHER_BACKUP" ]]; then
+        cp -a "$LAUNCHER_BACKUP" "$LAUNCHER_TARGET"
+    elif (( LAUNCHER_EXISTED == 0 )); then
+        rm -f "$LAUNCHER_TARGET"
     fi
     exit 1
 fi
@@ -89,6 +110,11 @@ INSTALLED_VERSION="$(sed -nE 's/^APP_VERSION = "([^"]+)"/\1/p' "$TARGET" | head 
     cp -a "$BACKUP" "$TARGET"
     if [[ -f "$BACKEND_BACKUP" ]]; then
         cp -a "$BACKEND_BACKUP" "$BACKEND_TARGET"
+    fi
+    if [[ -f "$LAUNCHER_BACKUP" ]]; then
+        cp -a "$LAUNCHER_BACKUP" "$LAUNCHER_TARGET"
+    elif (( LAUNCHER_EXISTED == 0 )); then
+        rm -f "$LAUNCHER_TARGET"
     fi
     exit 1
 }

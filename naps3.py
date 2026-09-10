@@ -2,7 +2,11 @@
 """
 NAPS3 — графическое сканирование документов для РЕД ОС и Windows.
 
-Версия 0.8:
+Версия 0.9:
+- добавлен официальный CLI регистрации сканера для Printer Doctor;
+- профиль проверяется по точному SANE ID или eSCL-адресу;
+- настройки обновляются атомарно с резервной копией и блокировкой GUI;
+- регистрация пользовательского профиля от root запрещена;
 - добавлена Windows-версия с системным backend Windows Image Acquisition;
 - интерфейс, страницы, импорт и защищённое сохранение общие для обеих ОС;
 - Windows-сборка включает GTK 3, Pillow и pdftoppm;
@@ -33,6 +37,7 @@ NAPS3 — графическое сканирование документов �
 
 from __future__ import annotations
 
+import argparse
 import concurrent.futures
 from collections import deque
 import json
@@ -58,6 +63,11 @@ from dataclasses import dataclass
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - unavailable on Windows
+    fcntl = None
 
 from windows_backend import (
     WindowsBackendError,
@@ -117,7 +127,7 @@ except ImportError as exc:
 
 APP_ID = "ru.redos.NAPS3"
 APP_NAME = "NAPS3"
-APP_VERSION = "0.8.4"
+APP_VERSION = "0.9.0"
 DEFAULT_MATCH = ""
 DEFAULT_SCANNER_NAME = "Сканер Windows" if IS_WINDOWS else "Сканер"
 DEFAULT_ESCL_URL = "http://127.0.0.1:60000/eSCL"
@@ -137,6 +147,7 @@ else:
     CONFIG_DIR = Path.home() / ".config" / "naps3"
     CACHE_DIR = Path.home() / ".cache" / "naps3"
 CONFIG_FILE = CONFIG_DIR / "settings.json"
+CONFIG_LOCK_FILE = CONFIG_DIR / "settings.lock"
 FAST_SANE_DIR = CACHE_DIR / "sane-fast"
 USB_SANE_DIR = CACHE_DIR / "sane-usb-hp"
 SCAN_LOG_FILE = CACHE_DIR / "scan.log"
@@ -207,6 +218,10 @@ class FileChooserSortGuard:
 
 class Naps3Error(RuntimeError):
     """Ошибка, сформулированная для пользователя."""
+
+
+class SettingsBusyError(Naps3Error):
+    """Настройки заняты запущенным экземпляром приложения."""
 
 
 def export_target_state(path: Path) -> Optional[tuple[int, ...]]:
@@ -768,10 +783,72 @@ def load_settings() -> dict[str, object]:
 
 def save_settings(settings: dict[str, object]) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(
-        json.dumps(settings, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".settings-",
+        suffix=".tmp",
+        dir=CONFIG_DIR,
     )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(
+            descriptor,
+            "w",
+            encoding="utf-8",
+            newline="\n",
+        ) as output:
+            output.write(json.dumps(settings, ensure_ascii=False, indent=2))
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        if not IS_WINDOWS:
+            os.chmod(temporary_path, 0o600)
+        os.replace(temporary_path, CONFIG_FILE)
+    except Exception:
+        try:
+            temporary_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def acquire_settings_lock(*, blocking: bool) -> Optional[object]:
+    """Lock settings writes between the GUI and external integrations."""
+    if fcntl is None:
+        return None
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    handle = CONFIG_LOCK_FILE.open("a+b")
+    flags = fcntl.LOCK_EX
+    if not blocking:
+        flags |= fcntl.LOCK_NB
+    try:
+        fcntl.flock(handle.fileno(), flags)
+    except BlockingIOError as exc:
+        handle.close()
+        raise SettingsBusyError(
+            "NAPS3 сейчас открыт. Закройте его окно и повторите регистрацию."
+        ) from exc
+    return handle
+
+
+def release_settings_lock(handle: Optional[object]) -> None:
+    if handle is None:
+        return
+    try:
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
+
+
+def backup_settings_file() -> Optional[Path]:
+    if not CONFIG_FILE.exists():
+        return None
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    backup = CONFIG_DIR / f"settings.json.backup-{stamp}-{uuid.uuid4().hex[:8]}"
+    shutil.copy2(CONFIG_FILE, backup)
+    if not IS_WINDOWS:
+        os.chmod(backup, 0o600)
+    return backup
 
 
 def ensure_fast_sane_config(
@@ -1479,6 +1556,8 @@ def build_network_profile(
     name: str,
     address: str,
     device_id: str = "",
+    *,
+    discover_device_id: bool = True,
 ) -> dict[str, object]:
     url = network_escl_url(address, 3.0)
     if not url:
@@ -1495,7 +1574,7 @@ def build_network_profile(
 
     # Reuse the system airscan ID when available; otherwise the direct eSCL
     # engine can scan by URL and SANE remains a fallback.
-    if not device_id:
+    if not device_id and discover_device_id:
         for item in discover_network_scanners():
             if item.get("ip") == host:
                 device_id = item.get("id", "")
@@ -1514,6 +1593,140 @@ def build_network_profile(
         "profile_source": "network-dialog",
         **adf_profile_fields(adf_capabilities),
     }
+
+
+def validate_registration_value(
+    value: str,
+    label: str,
+    *,
+    maximum_length: int,
+) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        raise Naps3Error(f"Не указано поле «{label}».")
+    if len(cleaned) > maximum_length:
+        raise Naps3Error(f"Поле «{label}» слишком длинное.")
+    if any(ord(character) < 32 or ord(character) == 127 for character in cleaned):
+        raise Naps3Error(f"Поле «{label}» содержит управляющие символы.")
+    return cleaned
+
+
+def build_registered_sane_profile(
+    device_id: str,
+    name: str = "",
+    connection: str = "",
+) -> dict[str, object]:
+    """Probe one exact SANE device and build a profile for external tools."""
+    device_id = validate_registration_value(
+        device_id,
+        "идентификатор устройства",
+        maximum_length=1024,
+    )
+    name = name.strip()
+    if name:
+        name = validate_registration_value(name, "имя", maximum_length=256)
+    backend = sane_backend_name(device_id)
+    if not backend:
+        raise Naps3Error("Не удалось определить SANE-backend устройства.")
+    if connection not in {"", "usb", "network"}:
+        raise Naps3Error("Тип подключения должен быть usb или network.")
+
+    output = ""
+    for attempt in range(2):
+        try:
+            probe = subprocess.run(
+                ["scanimage", "-d", device_id, "--help"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=8,
+                check=False,
+                env=local_sane_backend_environment(backend),
+            )
+        except FileNotFoundError as exc:
+            raise Naps3Error(
+                "Не установлен scanimage. Установите пакет sane-backends."
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            output = safe_decode(exc.stdout or b"")
+            if attempt == 0:
+                time.sleep(1.0)
+                continue
+            raise Naps3Error(
+                "Сканер не ответил за отведённое время. Проверьте подключение "
+                "и повторите регистрацию."
+            ) from exc
+
+        output = safe_decode(probe.stdout)
+        if probe.returncode == 0:
+            profile = build_sane_profile(
+                {"id": device_id, "name": name or device_id},
+                output,
+            )
+            if connection == "network":
+                profile["connection_kind"] = "network"
+                profile["transport"] = f"SANE {backend}, сетевой сканер"
+            profile["profile_source"] = "printer-doctor-cli"
+            return profile
+        if attempt == 0 and any(
+            marker in output.casefold()
+            for marker in (
+                "device busy",
+                "resource busy",
+                "sane_status_device_busy",
+                "status = busy",
+            )
+        ):
+            time.sleep(1.0)
+            continue
+        break
+
+    raise Naps3Error(friendly_scan_error(output))
+
+
+def register_scanner_profile(
+    *,
+    device_id: str = "",
+    address: str = "",
+    name: str = "",
+    connection: str = "",
+) -> tuple[dict[str, object], Optional[Path]]:
+    """Validate and atomically store one profile without changing other settings."""
+    if bool(device_id.strip()) == bool(address.strip()):
+        raise Naps3Error(
+            "Укажите ровно один способ подключения: --device-id или --address."
+        )
+    if address.strip() and connection:
+        raise Naps3Error(
+            "Параметр --connection применяется только вместе с --device-id."
+        )
+
+    if address.strip():
+        address = validate_registration_value(
+            address,
+            "адрес",
+            maximum_length=2048,
+        )
+        clean_name = name.strip()
+        if clean_name:
+            clean_name = validate_registration_value(
+                clean_name,
+                "имя",
+                maximum_length=256,
+            )
+        profile = build_network_profile(
+            clean_name,
+            address,
+            discover_device_id=False,
+        )
+        profile["profile_source"] = "printer-doctor-cli"
+    else:
+        profile = build_registered_sane_profile(device_id, name, connection)
+
+    settings = load_settings()
+    backup = backup_settings_file()
+    settings[PROFILE_KEY] = profile
+    save_settings(settings)
+    return profile, backup
 
 
 def build_escl_scan_settings(
@@ -3843,8 +4056,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self.device_model_label.set_text(model_suffix)
         if connection_kind == "network":
             network_ip = str(profile.get("ip") or "").strip()
+            backend = str(profile.get("backend") or "SANE")
             self.device_connection_label.set_text(
                 "Сетевое eSCL через sane-airscan"
+                if url
+                else f"Сетевой сканер через SANE ({backend})"
             )
             self.device_address_label.set_text(
                 network_ip or "Сетевой адрес определяется автоматически"
@@ -6842,8 +7058,18 @@ class Naps3Application(Gtk.Application):
             flags=Gio.ApplicationFlags.FLAGS_NONE,
         )
         self.window: Optional[MainWindow] = None
+        self._settings_lock: Optional[object] = None
 
     def do_startup(self) -> None:
+        try:
+            self._settings_lock = acquire_settings_lock(blocking=True)
+        except OSError as exc:
+            # A stale root-owned config must not prevent the scanner UI from
+            # opening. Saving will still report the underlying permissions error.
+            append_scan_log(
+                "Settings lock unavailable for GUI: "
+                f"{compact_details(exc, 400)}"
+            )
         Gtk.Application.do_startup(self)
         GLib.set_application_name(APP_NAME)
         GLib.set_prgname("naps3")
@@ -6856,6 +7082,13 @@ class Naps3Application(Gtk.Application):
         self.window.show_all()
         self.window.cancel_button.hide()
         self.window.present()
+
+    def do_shutdown(self) -> None:
+        try:
+            release_settings_lock(self._settings_lock)
+            self._settings_lock = None
+        finally:
+            Gtk.Application.do_shutdown(self)
 
 
 def check_runtime() -> Optional[str]:
@@ -6879,8 +7112,144 @@ def check_runtime() -> Optional[str]:
     return None
 
 
+def emit_registration_result(
+    payload: dict[str, object],
+    *,
+    json_output: bool,
+    error: bool = False,
+) -> None:
+    if json_output:
+        print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        return
+    stream = sys.stderr if error else sys.stdout
+    if error:
+        print(f"NAPS3: {payload['message']}", file=stream)
+        return
+    profile = dict(payload["profile"])
+    print(f"Профиль NAPS3 сохранён: {profile.get('name', 'Сканер')}")
+    print(f"Подключение: {profile.get('transport', 'не определено')}")
+    if payload.get("backup"):
+        print(f"Резервная копия: {payload['backup']}")
+
+
+def run_registration_cli(arguments: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="naps3 --register-scanner",
+        description="Проверить сканер и сохранить его рабочим устройством NAPS3.",
+    )
+    parser.add_argument("--register-scanner", action="store_true", required=True)
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--device-id", default="", metavar="SANE_ID")
+    target.add_argument("--address", default="", metavar="IP_OR_URL")
+    parser.add_argument("--name", default="", metavar="NAME")
+    parser.add_argument(
+        "--connection",
+        choices=("usb", "network"),
+        default="",
+        help="Тип подключения для профиля по SANE ID.",
+    )
+    parser.add_argument("--json", action="store_true", dest="json_output")
+    parsed = parser.parse_args(arguments)
+
+    if (
+        not IS_WINDOWS
+        and hasattr(os, "geteuid")
+        and os.geteuid() == 0
+    ):
+        emit_registration_result(
+            {
+                "schema": 1,
+                "ok": False,
+                "error": "ROOT_NOT_ALLOWED",
+                "message": (
+                    "регистрацию профиля нельзя выполнять от root. "
+                    "Запустите команду от имени пользователя рабочего стола."
+                ),
+            },
+            json_output=parsed.json_output,
+            error=True,
+        )
+        return 3
+
+    lock: Optional[object] = None
+    try:
+        lock = acquire_settings_lock(blocking=False)
+        profile, backup = register_scanner_profile(
+            device_id=parsed.device_id,
+            address=parsed.address,
+            name=parsed.name,
+            connection=parsed.connection,
+        )
+    except SettingsBusyError as exc:
+        emit_registration_result(
+            {
+                "schema": 1,
+                "ok": False,
+                "error": "NAPS3_RUNNING",
+                "message": str(exc),
+            },
+            json_output=parsed.json_output,
+            error=True,
+        )
+        return 4
+    except Naps3Error as exc:
+        emit_registration_result(
+            {
+                "schema": 1,
+                "ok": False,
+                "error": "SCANNER_PROBE_FAILED",
+                "message": str(exc),
+            },
+            json_output=parsed.json_output,
+            error=True,
+        )
+        return 3
+    except OSError as exc:
+        emit_registration_result(
+            {
+                "schema": 1,
+                "ok": False,
+                "error": "SETTINGS_WRITE_FAILED",
+                "message": friendly_general_error(exc, "сохранение профиля"),
+            },
+            json_output=parsed.json_output,
+            error=True,
+        )
+        return 5
+    finally:
+        release_settings_lock(lock)
+
+    payload: dict[str, object] = {
+        "schema": 1,
+        "ok": True,
+        "version": APP_VERSION,
+        "profile": {
+            "name": profile.get("name", ""),
+            "device_id": profile.get("device_id", ""),
+            "backend": profile.get("backend", ""),
+            "connection_kind": profile.get("connection_kind", ""),
+            "transport": profile.get("transport", ""),
+            "url": profile.get("url", ""),
+            "adf_present": profile.get("adf_present", False),
+            "adf_duplex_supported": profile.get(
+                "adf_duplex_supported", False
+            ),
+        },
+        "backup": str(backup) if backup else "",
+    }
+    emit_registration_result(payload, json_output=parsed.json_output)
+    return 0
+
+
 def main() -> int:
     locale.setlocale(locale.LC_ALL, "")
+
+    if "--registration-api-version" in sys.argv[1:]:
+        print("1")
+        return 0
+
+    if "--register-scanner" in sys.argv[1:]:
+        return run_registration_cli(sys.argv[1:])
 
     runtime_error = check_runtime()
     if runtime_error:

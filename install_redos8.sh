@@ -49,6 +49,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 for file in \
     naps3.py windows_backend.py naps3.svg naps3.png ipp-usb.conf \
     ipp-usb-naps3 ipp-usb-m428.conf ipp-usb-naps3.service.conf \
+    packaging/naps3-launcher \
     packaging/99-naps3-canon-mf4410.rules \
     packaging/naps3-usb-permissions LICENSE.ipp-usb; do
     [[ -f "$SCRIPT_DIR/$file" ]] || {
@@ -163,40 +164,8 @@ install -m 644 \
     "$SCRIPT_DIR/naps3.png" \
     /usr/share/icons/hicolor/256x256/apps/naps3.png
 
-cat >/usr/local/bin/naps3 <<'EOF'
-#!/usr/bin/env bash
-unset PYTHONHOME
-unset PYTHONPATH
-export PYTHONNOUSERSITE=1
-export PYTHONUNBUFFERED=1
-
-LOG_DIR="${HOME}/.cache/naps3"
-LOG_FILE="${LOG_DIR}/startup.log"
-mkdir -p "$LOG_DIR"
-touch "$LOG_FILE"
-
-{
-    echo
-    echo "===== NAPS3 start: $(date --iso-8601=seconds 2>/dev/null || date) ====="
-    echo "User: $(id -un)  Display: ${DISPLAY:-<none>}"
-} >>"$LOG_FILE"
-
-/usr/bin/python3 /opt/naps3/naps3.py "$@"     2> >(tee -a "$LOG_FILE" >&2)
-STATUS=$?
-
-if ((STATUS != 0)); then
-    SUMMARY="$(tail -n 12 "$LOG_FILE" | sed 's/[<>&]/ /g')"
-
-    if command -v zenity >/dev/null 2>&1 && [[ -n "${DISPLAY:-}" ]]; then
-        zenity --error             --title="NAPS3 — ошибка запуска"             --width=520             --text="NAPS3 не удалось запустить.\n\n$SUMMARY\n\nЖурнал: $LOG_FILE"             >/dev/null 2>&1 || true
-    elif command -v notify-send >/dev/null 2>&1 && [[ -n "${DISPLAY:-}" ]]; then
-        notify-send             "NAPS3 — ошибка запуска"             "Подробности сохранены в $LOG_FILE"             >/dev/null 2>&1 || true
-    fi
-fi
-
-exit "$STATUS"
-EOF
-chmod 755 /usr/local/bin/naps3
+install -m 755 "$SCRIPT_DIR/packaging/naps3-launcher" /usr/local/bin/naps3.new
+mv -f /usr/local/bin/naps3.new /usr/local/bin/naps3
 
 cat >/usr/share/applications/ru.redos.NAPS3.desktop <<'EOF'
 [Desktop Entry]

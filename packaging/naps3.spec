@@ -5,7 +5,7 @@
 %global _licensedir /usr/share/licenses
 
 Name:           naps3
-Version:        0.8.4
+Version:        0.9.0
 Release:        1.red80
 Summary:        Сканирование документов через SANE и eSCL
 License:        MIT AND BSD-2-Clause
@@ -122,6 +122,12 @@ exit 0
 %license %{_licensedir}/%{name}/LICENSE.ipp-usb
 
 %changelog
+* Thu Sep 10 2026 NAPS3 contributors <noreply@localhost> - 0.9.0-1.red80
+- Добавлен официальный CLI регистрации выбранного сканера для Printer Doctor.
+- Профиль проверяется по точному SANE ID или eSCL-адресу без общего поиска.
+- Настройки обновляются атомарно с резервной копией и блокировкой открытого GUI.
+- Запись пользовательского профиля от root запрещена.
+
 * Thu Sep 10 2026 NAPS3 contributors <noreply@localhost> - 0.8.4-1.red80
 - Устранена гонка фоновой проверки профиля с запуском SANE-сканирования.
 - Повторный поиск блокирует начало сканирования до завершения.
