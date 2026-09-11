@@ -33,16 +33,23 @@ def main() -> int:
     output_directory.mkdir(parents=True, exist_ok=True)
     output = output_directory / "NAPS3.WiaBridge.exe"
     source = root / "windows" / "wia_bridge.cs"
+
+    def windows_path(path: Path) -> str:
+        # MSYS2 Python exposes drive paths with forward slashes. The .NET
+        # Framework compiler treats a segment such as /windows as an option,
+        # so every filesystem argument must use native Windows separators.
+        return str(path).replace("/", "\\")
+
     subprocess.run(
         [
-            str(compiler),
+            windows_path(compiler),
             "/nologo",
             "/target:exe",
             "/optimize+",
             "/platform:anycpu",
-            f"/out:{output}",
+            f"/out:{windows_path(output)}",
             "/reference:Microsoft.CSharp.dll",
-            str(source),
+            windows_path(source),
         ],
         check=True,
     )
