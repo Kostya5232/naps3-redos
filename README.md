@@ -35,13 +35,13 @@ sudo dnf install -y https://github.com/Kostya5232/naps3-redos/releases/latest/do
 подключите бесплатный репозиторий:
 
 ```bash
-sudo curl -fsSL https://kostya5232.github.io/naps3-redos/naps3.repo -o /etc/yum.repos.d/naps3.repo && sudo dnf install -y naps3
+sudo curl -fsSL https://kostya5232.github.io/naps3-redos/naps3.repo -o /etc/yum.repos.d/naps3.repo && sudo dnf --refresh install -y naps3
 ```
 
 После этого обновление выполняется вместе с системой:
 
 ```bash
-sudo dnf upgrade
+sudo dnf --refresh upgrade -y naps3
 ```
 
 Репозиторий пока публикуется без RPM-подписи (`gpgcheck=0`). Пакеты и метаданные
