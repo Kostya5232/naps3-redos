@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -200,6 +202,114 @@ class LocalScannerDiscoveryTests(unittest.TestCase):
             naps3.choose_usb_profile(profiles, "Canon"),
             profiles[0],
         )
+
+
+class NetworkScannerDiscoveryTests(unittest.TestCase):
+    @staticmethod
+    def _dns_name(name: str) -> bytes:
+        return b"".join(
+            bytes([len(label.encode())]) + label.encode()
+            for label in name.split(".")
+        ) + b"\0"
+
+    @classmethod
+    def _mdns_response(cls) -> bytes:
+        service = "_uscan._tcp.local"
+        instance = "Office MFP._uscan._tcp.local"
+        target = "office-printer.local"
+
+        def record(name: str, record_type: int, data: bytes) -> bytes:
+            return (
+                cls._dns_name(name)
+                + struct.pack("!HHIH", record_type, 1, 120, len(data))
+                + data
+            )
+
+        text_values = (b"ty=Office MFP", b"rs=eSCL")
+        text = b"".join(bytes([len(value)]) + value for value in text_values)
+        records = [
+            record(service, 12, cls._dns_name(instance)),
+            record(
+                instance,
+                33,
+                struct.pack("!HHH", 0, 0, 8080) + cls._dns_name(target),
+            ),
+            record(instance, 16, text),
+            record(target, 1, socket.inet_aton("192.168.10.45")),
+        ]
+        return struct.pack("!6H", 0, 0x8400, 0, len(records), 0, 0) + b"".join(records)
+
+    def test_mdns_escl_records_create_selectable_network_device(self) -> None:
+        candidates = naps3.mdns_escl_candidates(
+            [(self._mdns_response(), "192.168.10.45")]
+        )
+        self.assertEqual(
+            candidates,
+            [{
+                "name": "Office MFP",
+                "ip": "192.168.10.45",
+                "id": "",
+                "url": "http://192.168.10.45:8080/eSCL",
+            }],
+        )
+
+    def test_windows_network_discovery_probes_advertised_escl_url(self) -> None:
+        capabilities = (
+            b"<scan:ScannerCapabilities xmlns:scan='http://schemas.hp.com/"
+            b"imaging/escl/2011/05/03'><scan:MakeAndModel>HP Network MFP"
+            b"</scan:MakeAndModel></scan:ScannerCapabilities>"
+        )
+        with mock.patch.object(
+            naps3, "_collect_mdns_packets",
+            return_value=[(self._mdns_response(), "192.168.10.45")],
+        ), mock.patch.object(
+            naps3, "fetch_escl_capabilities", return_value=capabilities
+        ) as probe:
+            devices = naps3.discover_windows_escl_scanners(0.01)
+
+        self.assertEqual(len(devices), 1)
+        self.assertEqual(devices[0]["name"], "HP Network MFP")
+        probe.assert_called_once_with("http://192.168.10.45:8080/eSCL", 1.5)
+
+    def test_windows_network_search_no_longer_returns_immediately_empty(self) -> None:
+        expected = [{"name": "Scanner", "ip": "192.168.10.45"}]
+        with mock.patch.object(naps3, "IS_WINDOWS", True), mock.patch.object(
+            naps3, "discover_windows_escl_scanners", return_value=expected
+        ) as discovery:
+            self.assertEqual(naps3.discover_network_scanners(), expected)
+        discovery.assert_called_once_with()
+
+    def test_dialog_keeps_discovered_escl_port_and_path(self) -> None:
+        self.assertEqual(
+            naps3.network_candidate_address({
+                "ip": "192.168.10.45",
+                "url": "http://192.168.10.45:8080/eSCL",
+            }),
+            "http://192.168.10.45:8080/eSCL",
+        )
+
+    def test_windows_profile_does_not_repeat_network_discovery(self) -> None:
+        capabilities = (
+            b"<ScannerCapabilities><MakeAndModel>Office MFP</MakeAndModel>"
+            b"</ScannerCapabilities>"
+        )
+        with mock.patch.object(naps3, "IS_WINDOWS", True), mock.patch.object(
+            naps3, "network_escl_url",
+            return_value="http://192.168.10.45:8080/eSCL",
+        ), mock.patch.object(
+            naps3, "fetch_escl_capabilities", return_value=capabilities
+        ), mock.patch.object(naps3, "discover_network_scanners") as discovery:
+            profile = naps3.build_network_profile("", "192.168.10.45")
+
+        self.assertEqual(profile["name"], "Office MFP")
+        discovery.assert_not_called()
+
+    def test_damaged_mdns_packet_is_ignored(self) -> None:
+        self.assertEqual(naps3.parse_mdns_packet(b"\x00\x01"), [])
+
+    def test_compressed_dns_name_is_decoded(self) -> None:
+        packet = b"\x03www\x05local\x00\xc0\x00"
+        self.assertEqual(naps3._dns_read_name(packet, 11), ("www.local", 13))
 
 
 class ImageProjectTests(unittest.TestCase):
