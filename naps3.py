@@ -2,7 +2,8 @@
 """
 NAPS3 — графическое сканирование документов для РЕД ОС и Windows.
 
-Версия 0.9:
+Версия 0.9.1:
+- Windows выполняет сетевой поиск eSCL-сканеров через DNS-SD/mDNS;
 - добавлен официальный CLI регистрации сканера для Printer Doctor;
 - профиль проверяется по точному SANE ID или eSCL-адресу;
 - настройки обновляются атомарно с резервной копией и блокировкой GUI;
@@ -45,10 +46,12 @@ import locale
 import ssl
 import os
 import re
+import select
 import signal
 import shutil
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -127,7 +130,7 @@ except ImportError as exc:
 
 APP_ID = "ru.redos.NAPS3"
 APP_NAME = "NAPS3"
-APP_VERSION = "0.9.0"
+APP_VERSION = "0.9.1"
 DEFAULT_MATCH = ""
 DEFAULT_SCANNER_NAME = "Сканер Windows" if IS_WINDOWS else "Сканер"
 DEFAULT_ESCL_URL = "http://127.0.0.1:60000/eSCL"
@@ -135,6 +138,8 @@ PROFILE_KEY = "scanner_profile"
 LEGACY_DEFAULT_MATCHES = {"mfp-yur"}
 MAX_ADF_PAGES = 200
 MAX_SCAN_PIXELS = 50_000_000
+MDNS_ENDPOINT = ("224.0.0.251", 5353)
+MDNS_ESCL_SERVICES = ("_uscan._tcp.local", "_uscans._tcp.local")
 
 if IS_WINDOWS:
     CONFIG_DIR = Path(
@@ -1527,11 +1532,315 @@ def usb_diagnostic_text() -> str:
     return "; ".join(details)
 
 
-def discover_network_scanners() -> list[dict[str, str]]:
-    # Automatic sane-airscan discovery is Linux-specific. Windows users can
-    # still add any eSCL scanner by its IP address in the same dialog.
-    if IS_WINDOWS:
+def _dns_encode_name(name: str) -> bytes:
+    encoded = bytearray()
+    for label in name.rstrip(".").split("."):
+        value = label.encode("utf-8")
+        if not value or len(value) > 63:
+            raise ValueError("Некорректное DNS-имя")
+        encoded.append(len(value))
+        encoded.extend(value)
+    encoded.append(0)
+    return bytes(encoded)
+
+
+def _dns_read_name(packet: bytes, offset: int) -> tuple[str, int]:
+    labels: list[str] = []
+    cursor = offset
+    next_offset = offset
+    jumped = False
+    visited: set[int] = set()
+
+    while True:
+        if cursor >= len(packet) or cursor in visited:
+            raise ValueError("Повреждённое DNS-имя")
+        visited.add(cursor)
+        length = packet[cursor]
+        if length & 0xC0 == 0xC0:
+            if cursor + 1 >= len(packet):
+                raise ValueError("Повреждённый DNS-указатель")
+            pointer = ((length & 0x3F) << 8) | packet[cursor + 1]
+            if not jumped:
+                next_offset = cursor + 2
+                jumped = True
+            cursor = pointer
+            continue
+        if length & 0xC0:
+            raise ValueError("Неподдерживаемая DNS-метка")
+        cursor += 1
+        if length == 0:
+            if not jumped:
+                next_offset = cursor
+            break
+        end = cursor + length
+        if end > len(packet):
+            raise ValueError("Обрезанное DNS-имя")
+        labels.append(packet[cursor:end].decode("utf-8", errors="replace"))
+        cursor = end
+    return ".".join(labels), next_offset
+
+
+def parse_mdns_packet(packet: bytes) -> list[dict[str, object]]:
+    """Parse the DNS-SD records needed for eSCL discovery."""
+    if len(packet) < 12:
         return []
+    try:
+        _identifier, _flags, questions, answers, authority, additional = (
+            struct.unpack_from("!6H", packet, 0)
+        )
+        offset = 12
+        for _index in range(questions):
+            _name, offset = _dns_read_name(packet, offset)
+            if offset + 4 > len(packet):
+                return []
+            offset += 4
+
+        records: list[dict[str, object]] = []
+        for _index in range(answers + authority + additional):
+            name, offset = _dns_read_name(packet, offset)
+            if offset + 10 > len(packet):
+                return records
+            record_type, _record_class, _ttl, data_length = struct.unpack_from(
+                "!HHIH", packet, offset
+            )
+            data_offset = offset + 10
+            data_end = data_offset + data_length
+            if data_end > len(packet):
+                return records
+
+            record: dict[str, object] = {
+                "name": name,
+                "type": record_type,
+            }
+            if record_type == 1 and data_length == 4:
+                record["address"] = socket.inet_ntoa(packet[data_offset:data_end])
+            elif record_type == 12:
+                record["target"], _unused = _dns_read_name(packet, data_offset)
+            elif record_type == 33 and data_length >= 6:
+                _priority, _weight, port = struct.unpack_from(
+                    "!HHH", packet, data_offset
+                )
+                target, _unused = _dns_read_name(packet, data_offset + 6)
+                record.update({"port": port, "target": target})
+            elif record_type == 16:
+                values: dict[str, str] = {}
+                cursor = data_offset
+                while cursor < data_end:
+                    size = packet[cursor]
+                    cursor += 1
+                    if cursor + size > data_end:
+                        break
+                    text = packet[cursor:cursor + size].decode(
+                        "utf-8", errors="replace"
+                    )
+                    cursor += size
+                    key, separator, value = text.partition("=")
+                    values[key.casefold()] = value if separator else ""
+                record["text"] = values
+            records.append(record)
+            offset = data_end
+        return records
+    except (ValueError, struct.error, OSError):
+        return []
+
+
+def _mdns_query_packet() -> bytes:
+    questions = b"".join(
+        _dns_encode_name(service) + struct.pack("!HH", 12, 0x8001)
+        for service in MDNS_ESCL_SERVICES
+    )
+    return struct.pack("!6H", 0, 0, len(MDNS_ESCL_SERVICES), 0, 0, 0) + questions
+
+
+def _local_ipv4_interfaces() -> list[str]:
+    addresses: set[str] = set()
+    try:
+        for item in socket.getaddrinfo(
+            socket.gethostname(), None, socket.AF_INET, socket.SOCK_DGRAM
+        ):
+            address = item[4][0]
+            if address and not address.startswith("127."):
+                addresses.add(address)
+    except OSError:
+        pass
+    try:
+        route_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            route_socket.connect(MDNS_ENDPOINT)
+            address = route_socket.getsockname()[0]
+            if address and not address.startswith("127."):
+                addresses.add(address)
+        finally:
+            route_socket.close()
+    except OSError:
+        pass
+    return sorted(addresses) or ["0.0.0.0"]
+
+
+def _collect_mdns_packets(timeout: float = 2.5) -> list[tuple[bytes, str]]:
+    query = _mdns_query_packet()
+    sockets: list[socket.socket] = []
+    packets: list[tuple[bytes, str]] = []
+    interfaces = _local_ipv4_interfaces()
+    try:
+        # Most devices honor the QU bit and answer directly to the sending
+        # socket. The multicast listener also covers devices that always send
+        # their response to port 5353.
+        multicast_listener = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            multicast_listener.setsockopt(
+                socket.SOL_SOCKET, socket.SO_REUSEADDR, 1
+            )
+            multicast_listener.bind(("", MDNS_ENDPOINT[1]))
+            for interface in interfaces:
+                membership = socket.inet_aton(MDNS_ENDPOINT[0]) + socket.inet_aton(
+                    interface
+                )
+                try:
+                    multicast_listener.setsockopt(
+                        socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership
+                    )
+                except OSError:
+                    continue
+            multicast_listener.setblocking(False)
+            sockets.append(multicast_listener)
+        except OSError:
+            multicast_listener.close()
+
+        for interface in interfaces:
+            listener = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                listener.bind(("" if interface == "0.0.0.0" else interface, 0))
+                if interface != "0.0.0.0":
+                    listener.setsockopt(
+                        socket.IPPROTO_IP,
+                        socket.IP_MULTICAST_IF,
+                        socket.inet_aton(interface),
+                    )
+                listener.setblocking(False)
+                listener.sendto(query, MDNS_ENDPOINT)
+                sockets.append(listener)
+            except OSError:
+                listener.close()
+
+        deadline = time.monotonic() + max(0.1, timeout)
+        while sockets and len(packets) < 128:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            readable, _writable, _failed = select.select(
+                sockets, [], [], min(0.4, remaining)
+            )
+            for listener in readable:
+                try:
+                    packet, source = listener.recvfrom(65535)
+                except (BlockingIOError, OSError):
+                    continue
+                packets.append((packet, source[0]))
+        return packets
+    finally:
+        for listener in sockets:
+            listener.close()
+
+
+def mdns_escl_candidates(
+    packets: list[tuple[bytes, str]],
+) -> list[dict[str, str]]:
+    services = {service.casefold() for service in MDNS_ESCL_SERVICES}
+    instances: dict[str, tuple[str, str]] = {}
+    service_records: dict[str, tuple[str, int]] = {}
+    text_records: dict[str, dict[str, str]] = {}
+    addresses: dict[str, str] = {}
+    response_sources: dict[str, str] = {}
+
+    for packet, source in packets:
+        for record in parse_mdns_packet(packet):
+            name = str(record.get("name") or "").rstrip(".")
+            key = name.casefold()
+            record_type = int(record.get("type") or 0)
+            if record_type == 12 and key in services:
+                target = str(record.get("target") or "").rstrip(".")
+                if target:
+                    instances[target.casefold()] = (target, key)
+                    response_sources[target.casefold()] = source
+            elif record_type == 33:
+                target = str(record.get("target") or "").rstrip(".")
+                port = int(record.get("port") or 0)
+                if target and port:
+                    service_records[key] = (target, port)
+                    response_sources[key] = source
+            elif record_type == 16 and isinstance(record.get("text"), dict):
+                text_records[key] = {
+                    str(item_key): str(item_value)
+                    for item_key, item_value in record["text"].items()
+                }
+            elif record_type == 1:
+                address = str(record.get("address") or "")
+                if address:
+                    addresses[key] = address
+
+    candidates: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for key, (instance, service) in instances.items():
+        target, port = service_records.get(key, ("", 0))
+        if not target or not port:
+            continue
+        host = (
+            addresses.get(target.casefold())
+            or response_sources.get(key)
+            or target
+        )
+        values = text_records.get(key, {})
+        resource = values.get("rs", "eSCL").strip().strip("/") or "eSCL"
+        secure = service == "_uscans._tcp.local"
+        scheme = "https" if secure else "http"
+        default_port = 443 if secure else 80
+        port_text = "" if port == default_port else f":{port}"
+        url = normalized_escl_url(f"{scheme}://{host}{port_text}/{resource}")
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        instance_name = instance.split("._uscan", 1)[0]
+        candidates.append(
+            {
+                "name": values.get("ty") or values.get("product") or instance_name,
+                "ip": host,
+                "id": "",
+                "url": url,
+            }
+        )
+    return candidates
+
+
+def discover_windows_escl_scanners(timeout: float = 2.5) -> list[dict[str, str]]:
+    candidates = mdns_escl_candidates(_collect_mdns_packets(timeout))
+    if not candidates:
+        return []
+
+    def verify(candidate: dict[str, str]) -> Optional[dict[str, str]]:
+        capabilities = fetch_escl_capabilities(candidate["url"], 1.5)
+        if not capabilities:
+            return None
+        verified = candidate.copy()
+        model = extract_escl_model(capabilities)
+        if model:
+            verified["name"] = model
+        return verified
+
+    devices: list[dict[str, str]] = []
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(8, len(candidates))
+    ) as executor:
+        for verified in executor.map(verify, candidates):
+            if verified is not None:
+                devices.append(verified)
+    return devices
+
+
+def discover_network_scanners() -> list[dict[str, str]]:
+    if IS_WINDOWS:
+        return discover_windows_escl_scanners()
 
     output = list_backend_devices(
         ["airscan"],
@@ -1550,6 +1859,11 @@ def discover_network_scanners() -> list[dict[str, str]]:
         seen.add(key)
         devices.append(item)
     return devices
+
+
+def network_candidate_address(item: dict[str, str]) -> str:
+    """Keep the advertised eSCL port and resource path when available."""
+    return (item.get("url") or item.get("ip") or "").strip()
 
 
 def build_network_profile(
@@ -1574,7 +1888,7 @@ def build_network_profile(
 
     # Reuse the system airscan ID when available; otherwise the direct eSCL
     # engine can scan by URL and SANE remains a fallback.
-    if not device_id and discover_device_id:
+    if not device_id and discover_device_id and not IS_WINDOWS:
         for item in discover_network_scanners():
             if item.get("ip") == host:
                 device_id = item.get("id", "")
@@ -2573,10 +2887,16 @@ class NetworkScannerDialog(Gtk.Dialog):
         title.set_xalign(0)
         area.pack_start(title, False, False, 0)
 
+        if devices:
+            discovery_text = f"Автоматический поиск нашёл устройств: {len(devices)}."
+        else:
+            discovery_text = (
+                "Автоматический поиск завершён, совместимые устройства не найдены."
+            )
         description = Gtk.Label(
             label=(
-                "Подключение сохраняется в профиле. Для потокового АПД "
-                "NAPS3 обращается к eSCL напрямую."
+                f"{discovery_text} Подключение сохраняется в профиле. Для "
+                "потокового АПД NAPS3 обращается к eSCL напрямую."
             )
         )
         description.set_xalign(0)
@@ -2640,7 +2960,7 @@ class NetworkScannerDialog(Gtk.Dialog):
             item = self.devices[int(active_id)]
         except (ValueError, IndexError):
             return
-        self.address_entry.set_text(item.get("ip", ""))
+        self.address_entry.set_text(network_candidate_address(item))
         self.name_entry.set_text(item.get("name", ""))
 
     def get_selection(self) -> tuple[str, str, str]:
@@ -4534,6 +4854,10 @@ class MainWindow(Gtk.ApplicationWindow):
         self.set_busy(False)
         if error:
             self.set_status("Автоматический поиск сети не выполнен")
+        elif devices:
+            self.set_status(f"Найдено сетевых eSCL-сканеров: {len(devices)}")
+        else:
+            self.set_status("Сетевые eSCL-сканеры не найдены")
 
         dialog = NetworkScannerDialog(self, devices)
         response = dialog.run()
