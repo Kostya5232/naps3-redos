@@ -60,12 +60,15 @@ jobs:
           version="$(rpm -qp --queryformat '%{VERSION}' public/repo/*.rpm)"
 
           cat > public/naps3.repo <<EOF
-          [naps3]
+          [naps3-redos]
           name=NAPS3 for RED OS 8
           baseurl=${base_url}/repo/
           enabled=1
           gpgcheck=0
           repo_gpgcheck=0
+          metadata_expire=1m
+          http_caching=packages
+          skip_if_unavailable=0
           EOF
 
           cat > public/index.html <<EOF
@@ -73,7 +76,7 @@ jobs:
           <html lang="ru"><head><meta charset="utf-8"><title>NAPS3 для РЕД ОС</title></head>
           <body><h1>NAPS3 для РЕД ОС</h1>
           <p>DNF-репозиторий версии ${version}.</p>
-          <pre>sudo curl -fsSL ${base_url}/naps3.repo -o /etc/yum.repos.d/naps3.repo &amp;&amp; sudo dnf install -y naps3</pre>
+          <pre>sudo curl -fsSL ${base_url}/naps3.repo -o /etc/yum.repos.d/naps3.repo &amp;&amp; sudo dnf --refresh install -y naps3</pre>
           <p><a href="https://github.com/${GITHUB_REPOSITORY}/releases/latest">Скачать выпуск</a></p>
           </body></html>
           EOF
