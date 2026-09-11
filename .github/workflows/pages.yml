@@ -7,6 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
   pages: write
   id-token: write
@@ -31,21 +32,130 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y createrepo-c rpm
 
-      - name: Скачать RPM последнего выпуска
+      - name: Скачать RPM всех выпусков
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          mkdir -p release-assets public/repo
-          gh release download \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern 'naps3-*.red80.x86_64.rpm' \
-            --dir release-assets
-          rpm_path="$(find release-assets -maxdepth 1 -type f -name 'naps3-*.red80.x86_64.rpm' | head -n 1)"
-          if [[ -z "$rpm_path" ]]; then
+          set -Eeuo pipefail
+          mkdir -p public/repo
+
+          while IFS= read -r tag; do
+            if ! gh release download "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern 'naps3-*.red80.x86_64.rpm' \
+              --dir public/repo; then
+              echo "В выпуске $tag нет RPM для РЕД ОС, пропускаем"
+            fi
+          done < <(
+            gh release list \
+              --repo "$GITHUB_REPOSITORY" \
+              --limit 100 \
+              --json tagName \
+              --jq '.[].tagName'
+          )
+
+          latest_tag="$(
+            gh release view \
+              --repo "$GITHUB_REPOSITORY" \
+              --json tagName \
+              --jq '.tagName'
+          )"
+          latest_version="${latest_tag#v}"
+          latest_rpm="$(
+            find public/repo -maxdepth 1 -type f \
+              -name "naps3-${latest_version}-*.red80.x86_64.rpm" \
+              -print -quit
+          )"
+          if [[ -z "$latest_rpm" ]]; then
             echo "RPM последнего выпуска не найден" >&2
             exit 1
           fi
-          cp "$rpm_path" public/repo/
+          echo "LATEST_RPM=$latest_rpm" >> "$GITHUB_ENV"
+
+      - name: Сохранить предыдущие метаданные DNF
+        shell: bash
+        env:
+          CACHE_BUSTER: ${{ github.run_id }}-${{ github.run_attempt }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          mkdir -p previous-repodata
+
+          previous_run_id="$(
+            gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow pages.yml \
+              --status success \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId // empty' || true
+          )"
+          if [[ -n "$previous_run_id" ]] && \
+            gh run download "$previous_run_id" \
+              --repo "$GITHUB_REPOSITORY" \
+              --name github-pages \
+              --dir previous-pages; then
+            mkdir -p previous-site
+            tar -xf previous-pages/artifact.tar -C previous-site
+            if [[ -d previous-site/repo/repodata ]]; then
+              find previous-site/repo/repodata -maxdepth 1 -type f \
+                ! -name repomd.xml \
+                -exec cp '{}' previous-repodata/ \;
+              find previous-repodata -maxdepth 1 -type f \
+                -printf '%f\n' > previous-repodata-files.txt
+            fi
+          fi
+
+          if [[ -s previous-repodata-files.txt ]]; then
+            echo "Предыдущие метаданные взяты из публикации $previous_run_id"
+            exit 0
+          fi
+
+          owner="${GITHUB_REPOSITORY%%/*}"
+          repository="${GITHUB_REPOSITORY#*/}"
+          export REPOSITORY_URL="https://${owner,,}.github.io/${repository}/repo"
+
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import urllib.parse
+          import urllib.request
+          import xml.etree.ElementTree as ET
+
+          repository_url = os.environ["REPOSITORY_URL"].rstrip("/")
+          cache_buster = os.environ["CACHE_BUSTER"]
+          destination = pathlib.Path("previous-repodata")
+
+          def read_url(url):
+              separator = "&" if "?" in url else "?"
+              request = urllib.request.Request(
+                  f"{url}{separator}run={urllib.parse.quote(cache_buster)}",
+                  headers={"Cache-Control": "no-cache"},
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return response.read()
+
+          try:
+              repomd = read_url(f"{repository_url}/repodata/repomd.xml")
+              root = ET.fromstring(repomd)
+              files = []
+              for location in root.findall(".//{*}location"):
+                  href = location.get("href", "")
+                  if not href.startswith("repodata/"):
+                      continue
+                  filename = pathlib.PurePosixPath(href).name
+                  (destination / filename).write_bytes(
+                      read_url(f"{repository_url}/{href}")
+                  )
+                  files.append(filename)
+              pathlib.Path("previous-repodata-files.txt").write_text(
+                  "".join(f"{name}\n" for name in files), encoding="utf-8"
+              )
+              print(f"Сохранено предыдущих файлов метаданных: {len(files)}")
+          except Exception as error:
+              print(f"Предыдущие метаданные недоступны, продолжаем: {error}")
+          PY
 
       - name: Создать DNF-репозиторий и страницу установки
         shell: bash
@@ -53,11 +163,37 @@ jobs:
           set -Eeuo pipefail
           createrepo_c public/repo
 
+          if [[ -d previous-repodata ]]; then
+            find previous-repodata -maxdepth 1 -type f \
+              -exec cp --no-clobber '{}' public/repo/repodata/ \;
+          fi
+
           owner="${GITHUB_REPOSITORY%%/*}"
           repository="${GITHUB_REPOSITORY#*/}"
           owner_lower="${owner,,}"
           base_url="https://${owner_lower}.github.io/${repository}"
-          version="$(rpm -qp --queryformat '%{VERSION}' public/repo/*.rpm)"
+          version="$(rpm -qp --queryformat '%{VERSION}' "$LATEST_RPM")"
+
+          python3 - <<'PY'
+          import pathlib
+          import xml.etree.ElementTree as ET
+
+          repodata = pathlib.Path("public/repo/repodata")
+          root = ET.parse(repodata / "repomd.xml").getroot()
+          for location in root.findall(".//{*}location"):
+              href = location.get("href", "")
+              path = pathlib.Path("public/repo") / href
+              if not path.is_file():
+                  raise SystemExit(f"Новый индекс ссылается на отсутствующий файл: {href}")
+
+          manifest = pathlib.Path("previous-repodata-files.txt")
+          if manifest.is_file():
+              for filename in manifest.read_text(encoding="utf-8").splitlines():
+                  if not (repodata / filename).is_file():
+                      raise SystemExit(
+                          f"Предыдущий файл метаданных не сохранён: {filename}"
+                      )
+          PY
 
           cat > public/naps3.repo <<EOF
           [naps3-redos]
