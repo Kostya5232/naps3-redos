@@ -50,7 +50,10 @@ jobs:
       - name: Проверить собранную программу
         shell: pwsh
         run: |
-          .\dist\windows\NAPS3\NAPS3.exe --self-test
+          $process = Start-Process -FilePath .\dist\windows\NAPS3\NAPS3.exe -ArgumentList "--self-test" -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Self-test NAPS3 завершился с кодом $($process.ExitCode)"
+          }
           $startupLog = Join-Path $env:LOCALAPPDATA "NAPS3\startup.log"
           if (-not (Test-Path -LiteralPath $startupLog -PathType Leaf)) {
             throw "Собранная программа не создала журнал запуска: $startupLog"
