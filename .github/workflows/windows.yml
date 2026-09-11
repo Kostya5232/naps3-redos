@@ -31,11 +31,15 @@ jobs:
             mingw-w64-ucrt-x86_64-poppler
             mingw-w64-ucrt-x86_64-pyinstaller
 
-      - name: Проверить Python и WIA
+      - name: Проверить Python
         shell: msys2 {0}
         run: |
           python -m py_compile naps3.py windows_backend.py windows/build_wia_bridge.py windows/startup_hook.py
-          python -m unittest discover -s tests -p 'test_*.py'
+          python -m unittest discover -v -s tests -p 'test_*.py'
+
+      - name: Собрать и проверить нативный WIA-мост
+        shell: msys2 {0}
+        run: |
           python windows/build_wia_bridge.py
           ./build/windows-wia/NAPS3.WiaBridge.exe -Action selftest
 
