@@ -12,7 +12,7 @@ import windows_backend
 class WindowsBackendTests(unittest.TestCase):
     def test_bridge_json_uses_last_valid_line(self) -> None:
         payload = windows_backend.parse_bridge_json(
-            "PowerShell host message\n{\"present\":true}\n"
+            "Native helper diagnostic\n{\"present\":true}\n"
         )
         self.assertEqual(payload, {"present": True})
 
@@ -50,14 +50,16 @@ class WindowsBackendTests(unittest.TestCase):
 
     def test_scan_command_passes_exact_device_and_options(self) -> None:
         with mock.patch.object(
-            windows_backend, "powershell_executable", return_value="powershell.exe"
-        ), mock.patch.object(
-            windows_backend, "wia_bridge_path", return_value=Path("bridge.ps1")
+            windows_backend,
+            "wia_bridge_executable",
+            return_value=Path("NAPS3.WiaBridge.exe"),
         ), mock.patch.object(Path, "is_file", return_value=True):
             command = windows_backend.build_wia_scan_command(
                 "wia:device", Path("pages"), "ADF Duplex", "Gray", 300, "A4"
             )
         joined = "\n".join(command)
+        self.assertEqual(command[0], "NAPS3.WiaBridge.exe")
+        self.assertNotIn("powershell", joined.casefold())
         self.assertIn("wia:device", joined)
         self.assertIn("ADF Duplex", joined)
         self.assertIn("Gray", joined)
@@ -72,7 +74,9 @@ class WindowsBackendTests(unittest.TestCase):
             stderr=json.dumps({"error": "Offline", "hresult": "0x80210005"}),
         )
         with mock.patch.object(
-            windows_backend, "build_wia_command", return_value=["powershell"]
+            windows_backend,
+            "build_wia_command",
+            return_value=["NAPS3.WiaBridge.exe"],
         ):
             with self.assertRaisesRegex(
                 windows_backend.WindowsBackendError, "0x80210005"

@@ -18,6 +18,29 @@ from PIL import Image
 import naps3
 
 
+class RuntimeCheckTests(unittest.TestCase):
+    def test_windows_gui_start_does_not_require_wia_helper(self) -> None:
+        with mock.patch.object(naps3, "IS_WINDOWS", True), mock.patch.object(
+            naps3,
+            "run_wia_bridge",
+            side_effect=AssertionError("GUI startup must not start the WIA helper"),
+        ):
+            self.assertIsNone(naps3.check_runtime())
+
+    def test_windows_self_test_still_checks_wia_and_pdf_runtime(self) -> None:
+        with mock.patch.object(naps3, "IS_WINDOWS", True), mock.patch.object(
+            naps3,
+            "run_wia_bridge",
+            side_effect=naps3.WindowsBackendError("WIA-мост недоступен"),
+        ), mock.patch.object(naps3, "find_runtime_executable", return_value=None):
+            error = naps3.check_runtime(strict_windows=True)
+
+        self.assertIsNotNone(error)
+        assert error is not None
+        self.assertIn("WIA-мост недоступен", error)
+        self.assertIn("pdftoppm", error)
+
+
 class EsclParsingTests(unittest.TestCase):
     def test_manual_duplex_reverses_backs_and_interleaves(self) -> None:
         fronts = [Path("f1"), Path("f2"), Path("f3")]

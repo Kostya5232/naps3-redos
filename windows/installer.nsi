@@ -48,6 +48,7 @@ Section "NAPS3" MainSection
 
   CreateDirectory "$SMPROGRAMS\NAPS3"
   CreateShortcut "$SMPROGRAMS\NAPS3\NAPS3.lnk" "$INSTDIR\NAPS3.exe"
+  CreateShortcut "$SMPROGRAMS\NAPS3\Журнал запуска NAPS3.lnk" "$WINDIR\notepad.exe" '"$LOCALAPPDATA\NAPS3\startup.log"'
   CreateShortcut "$SMPROGRAMS\NAPS3\Удалить NAPS3.lnk" "$INSTDIR\Uninstall.exe"
   CreateShortcut "$DESKTOP\NAPS3.lnk" "$INSTDIR\NAPS3.exe"
 

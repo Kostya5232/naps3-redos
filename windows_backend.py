@@ -1,7 +1,7 @@
 """Windows helpers for the NAPS3 WIA backend.
 
 The GTK application stays platform-neutral.  This module contains the small
-boundary that starts the bundled PowerShell bridge, validates its JSON output,
+boundary that starts the bundled native bridge, validates its JSON output,
 and turns installed WIA devices into the scanner-profile format used by NAPS3.
 It deliberately has no third-party imports, so its parsing and selection logic
 can be tested on Linux as well as Windows.
@@ -35,24 +35,8 @@ def resource_path(*parts: str) -> Path:
     return application_root().joinpath(*parts)
 
 
-def powershell_executable() -> Optional[str]:
-    """Prefer inbox Windows PowerShell, which is present on Windows 10/11."""
-    system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
-    candidates = [
-        system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe",
-        Path(shutil.which("powershell.exe") or ""),
-        Path(shutil.which("powershell") or ""),
-        Path(shutil.which("pwsh.exe") or ""),
-        Path(shutil.which("pwsh") or ""),
-    ]
-    for candidate in candidates:
-        if str(candidate) and candidate.is_file():
-            return str(candidate)
-    return None
-
-
-def wia_bridge_path() -> Path:
-    return resource_path("windows", "wia_bridge.ps1")
+def wia_bridge_executable() -> Path:
+    return resource_path("windows", "NAPS3.WiaBridge.exe")
 
 
 def windows_creation_flags() -> int:
@@ -64,24 +48,12 @@ def windows_creation_flags() -> int:
 
 
 def build_wia_command(action: str, **values: object) -> list[str]:
-    executable = powershell_executable()
-    if not executable:
-        raise WindowsBackendError(
-            "Не найден Windows PowerShell, необходимый для работы со сканером WIA."
-        )
-    bridge = wia_bridge_path()
+    bridge = wia_bridge_executable()
     if not bridge.is_file():
         raise WindowsBackendError(
             f"Не найден компонент сканирования Windows: {bridge}"
         )
     command = [
-        executable,
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
         str(bridge),
         "-Action",
         action,
@@ -94,7 +66,7 @@ def build_wia_command(action: str, **values: object) -> list[str]:
 
 
 def parse_bridge_json(raw: str) -> Any:
-    """Decode the last JSON line, ignoring harmless PowerShell host output."""
+    """Decode the last JSON line, ignoring harmless helper diagnostics."""
     for line in reversed(raw.replace("\ufeff", "").splitlines()):
         candidate = line.strip()
         if not candidate:

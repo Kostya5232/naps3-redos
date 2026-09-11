@@ -5,7 +5,7 @@
 %global _licensedir /usr/share/licenses
 
 Name:           naps3
-Version:        0.9.1
+Version:        0.9.2
 Release:        1.red80
 Summary:        Сканирование документов через SANE и eSCL
 License:        MIT AND BSD-2-Clause
@@ -122,6 +122,11 @@ exit 0
 %license %{_licensedir}/%{name}/LICENSE.ipp-usb
 
 %changelog
+* Fri Sep 11 2026 NAPS3 contributors <noreply@localhost> - 0.9.2-1.red80
+- Replace the Windows PowerShell WIA bridge with a native helper
+- Keep the Windows GUI available when optional scanner components are blocked
+- Record early Windows startup failures in startup.log
+
 * Fri Sep 11 2026 NAPS3 contributors <noreply@localhost> - 0.9.1-1.red80
 - Добавлен автоматический DNS-SD/mDNS-поиск сетевых eSCL-сканеров в Windows.
 - Диалог подключения сообщает результат поиска и сохраняет ручной ввод адреса.
