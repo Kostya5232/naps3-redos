@@ -2,7 +2,11 @@
 """
 NAPS3 — графическое сканирование документов для РЕД ОС и Windows.
 
-Версия 0.9.1:
+Версия 0.9.2:
+- Windows запускается без выполнения PowerShell-скриптов;
+- WIA работает через поставляемый нативный NAPS3.WiaBridge.exe;
+- ранние ошибки Windows записываются в startup.log и показываются пользователю;
+- недоступный WIA-компонент больше не мешает открыть интерфейс и сетевой eSCL;
 - Windows выполняет сетевой поиск eSCL-сканеров через DNS-SD/mDNS;
 - добавлен официальный CLI регистрации сканера для Printer Doctor;
 - профиль проверяется по точному SANE ID или eSCL-адресу;
@@ -87,6 +91,33 @@ from windows_backend import (
 
 IS_WINDOWS = os.name == "nt"
 
+
+def show_native_startup_error(message: str) -> None:
+    """Show an import/runtime failure when the Windows build has no console."""
+    if not IS_WINDOWS:
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(
+            None,
+            message,
+            "Ошибка запуска NAPS3",
+            0x10,
+        )
+    except Exception:
+        pass
+
+
+def report_startup_error(message: str) -> None:
+    if sys.stderr is not None:
+        try:
+            print(message, file=sys.stderr)
+        except Exception:
+            pass
+    show_native_startup_error(message)
+
+
 try:
     import gi
 
@@ -103,11 +134,11 @@ except (ImportError, ValueError) as exc:
         if IS_WINDOWS
         else "Установите зависимости:\n  sudo dnf install python3-gobject gtk3"
     )
-    print(
+    report_startup_error(
         "Не удалось загрузить GTK 3 / PyGObject.\n"
         f"{dependency_hint}\n\n"
-        f"Технические сведения: {exc}",
-        file=sys.stderr,
+        f"Технические сведения: {exc}\n\n"
+        "Журнал: %LOCALAPPDATA%\\NAPS3\\startup.log"
     )
     raise SystemExit(2)
 
@@ -119,18 +150,18 @@ except ImportError as exc:
         if IS_WINDOWS
         else "Установите пакет:\n  sudo dnf install python3-pillow"
     )
-    print(
+    report_startup_error(
         "Не удалось загрузить Pillow.\n"
         f"{dependency_hint}\n\n"
-        f"Технические сведения: {exc}",
-        file=sys.stderr,
+        f"Технические сведения: {exc}\n\n"
+        "Журнал: %LOCALAPPDATA%\\NAPS3\\startup.log"
     )
     raise SystemExit(2)
 
 
 APP_ID = "ru.redos.NAPS3"
 APP_NAME = "NAPS3"
-APP_VERSION = "0.9.1"
+APP_VERSION = "0.9.2"
 DEFAULT_MATCH = ""
 DEFAULT_SCANNER_NAME = "Сканер Windows" if IS_WINDOWS else "Сканер"
 DEFAULT_ESCL_URL = "http://127.0.0.1:60000/eSCL"
@@ -7415,10 +7446,12 @@ class Naps3Application(Gtk.Application):
             Gtk.Application.do_shutdown(self)
 
 
-def check_runtime() -> Optional[str]:
+def check_runtime(*, strict_windows: bool = False) -> Optional[str]:
     missing: list[str] = []
 
     if IS_WINDOWS:
+        if not strict_windows:
+            return None
         try:
             result = run_wia_bridge("selftest", timeout=8.0)
             if not isinstance(result, dict) or not result.get("ok"):
@@ -7575,12 +7608,16 @@ def main() -> int:
     if "--register-scanner" in sys.argv[1:]:
         return run_registration_cli(sys.argv[1:])
 
-    runtime_error = check_runtime()
+    self_test = "--self-test" in sys.argv
+    runtime_error = check_runtime(strict_windows=self_test)
     if runtime_error:
-        print(runtime_error, file=sys.stderr)
+        report_startup_error(
+            f"{runtime_error}\n\n"
+            "Подробности: %LOCALAPPDATA%\\NAPS3\\startup.log"
+        )
         return 2
 
-    if "--self-test" in sys.argv:
+    if self_test:
         print(f"NAPS3 {APP_VERSION}: runtime OK")
         return 0
 

@@ -5,10 +5,11 @@ import sys
 
 root = Path(SPECPATH).parent
 pdf_tool = Path(os.environ["PDFTOPPM_EXE"])
+wia_tool = Path(os.environ["WIA_BRIDGE_EXE"])
 prefix = Path(sys.prefix)
 
 datas = [
-    (str(root / "windows" / "wia_bridge.ps1"), "windows"),
+    (str(wia_tool), "windows"),
     (str(root / "naps3.png"), "."),
     (str(root / "naps3.svg"), "."),
 ]
@@ -35,7 +36,7 @@ a = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=[str(root / "windows" / "startup_hook.py")],
     excludes=[],
     noarchive=False,
 )

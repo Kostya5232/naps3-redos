@@ -13,6 +13,11 @@ fi
 
 export PDFTOPPM_EXE
 
+"$PYTHON" windows/build_wia_bridge.py
+WIA_BRIDGE_FILE="$ROOT/build/windows-wia/NAPS3.WiaBridge.exe"
+test -s "$WIA_BRIDGE_FILE"
+export WIA_BRIDGE_EXE="$(cygpath -w "$WIA_BRIDGE_FILE")"
+
 "$PYTHON" - <<'PY'
 from pathlib import Path
 from PIL import Image
