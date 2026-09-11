@@ -26,7 +26,7 @@ def main() -> int:
     compiler = next((path for path in candidates if path.is_file()), None)
     if compiler is None:
         raise SystemExit(
-            "Не найден компилятор .NET Framework csc.exe для сборки WIA-моста."
+            ".NET Framework csc.exe was not found for the native WIA bridge."
         )
 
     output_directory = root / "build" / "windows-wia"
@@ -54,8 +54,8 @@ def main() -> int:
         check=True,
     )
     if not output.is_file():
-        raise SystemExit("Компилятор не создал WIA-мост.")
-    print(f"Готово: {output}")
+        raise SystemExit("The compiler did not create the native WIA bridge.")
+    print(f"Built: {output}")
     return 0
 
 
