@@ -83,11 +83,11 @@ def main() -> int:
         )
         if not visible or not alive or "Fatal Python error" in log_text:
             raise RuntimeError(
-                f"Окно NAPS3 не открылось (код {process.returncode}).\n"
+                f"NAPS3 window did not open (exit code {process.returncode}).\n"
                 f"stderr: {stderr.decode(errors='replace')}\n"
                 f"startup.log: {log_text[-4000:]}"
             )
-        print("Окно NAPS3 открылось: OK")
+        print("NAPS3 GUI opened: OK")
     return 0
 
 

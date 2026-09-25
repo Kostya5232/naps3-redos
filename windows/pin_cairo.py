@@ -37,7 +37,7 @@ def download_package(archive: Path) -> None:
                 while block := response.read(1024 * 1024):
                     output.write(block)
         if sha256(temporary) != PACKAGE_SHA256:
-            raise RuntimeError("Контрольная сумма архива Cairo не совпадает.")
+            raise RuntimeError("Cairo archive SHA-256 mismatch")
         temporary.replace(archive)
     finally:
         temporary.unlink(missing_ok=True)
@@ -46,9 +46,9 @@ def download_package(archive: Path) -> None:
 def pin_cairo(bundle: Path, archive: Path) -> None:
     dll = bundle / "_internal" / "libcairo-2.dll"
     if not dll.is_file():
-        raise FileNotFoundError(f"В Windows-пакете отсутствует {dll}")
+        raise FileNotFoundError(f"Windows bundle is missing {dll}")
     if sha256(dll) == DLL_SHA256:
-        print("Cairo 1.18.4-4: уже включён в Windows-пакет")
+        print("Cairo 1.18.4-4 is already included in the Windows bundle")
         return
 
     if not archive.is_file() or sha256(archive) != PACKAGE_SHA256:
@@ -57,7 +57,7 @@ def pin_cairo(bundle: Path, archive: Path) -> None:
     system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
     tar = system_root / "System32" / "tar.exe"
     if not tar.is_file():
-        raise FileNotFoundError(f"Не найдена системная утилита {tar}")
+        raise FileNotFoundError(f"System tar executable was not found: {tar}")
     descriptor, temporary_name = tempfile.mkstemp(dir=dll.parent, suffix=".dll")
     temporary = Path(temporary_name)
     try:
@@ -70,14 +70,14 @@ def pin_cairo(bundle: Path, archive: Path) -> None:
             )
         if result.returncode:
             raise RuntimeError(
-                f"Не удалось извлечь Cairo: {result.stderr.decode(errors='replace')}"
+                f"Failed to extract Cairo: {result.stderr.decode(errors='replace')}"
             )
         if sha256(temporary) != DLL_SHA256:
-            raise RuntimeError("Контрольная сумма DLL Cairo не совпадает.")
+            raise RuntimeError("Cairo DLL SHA-256 mismatch")
         temporary.replace(dll)
     finally:
         temporary.unlink(missing_ok=True)
-    print(f"Cairo 1.18.4-4 включён в Windows-пакет: {dll}")
+    print(f"Cairo 1.18.4-4 included in Windows bundle: {dll}")
 
 
 def main() -> int:
