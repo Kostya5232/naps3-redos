@@ -1,8 +1,8 @@
-"""Windows helpers for the NAPS3 WIA backend.
+"""Windows helpers for the NAPS3 WIA and TWAIN backends.
 
 The GTK application stays platform-neutral.  This module contains the small
-boundary that starts the bundled native bridge, validates its JSON output,
-and turns installed WIA devices into the scanner-profile format used by NAPS3.
+boundary that starts the bundled native bridges, validates their JSON output,
+and turns installed Windows scanners into the profile format used by NAPS3.
 It deliberately has no third-party imports, so its parsing and selection logic
 can be tested on Linux as well as Windows.
 """
@@ -37,6 +37,10 @@ def resource_path(*parts: str) -> Path:
 
 def wia_bridge_executable() -> Path:
     return resource_path("windows", "NAPS3.WiaBridge.exe")
+
+
+def twain_bridge_executable() -> Path:
+    return resource_path("windows", "NAPS3.TwainBridge.exe")
 
 
 def windows_creation_flags() -> int:
@@ -195,6 +199,107 @@ def build_wia_scan_command(
         Dpi=dpi,
         Paper=paper,
     )
+
+
+def build_twain_command(action: str, *values: object) -> list[str]:
+    bridge = twain_bridge_executable()
+    if not bridge.is_file():
+        raise WindowsBackendError(f"Не найден компонент TWAIN: {bridge}")
+    return [str(bridge), action, *(str(value) for value in values)]
+
+
+def twain_error_text(stdout: str, stderr: str) -> str:
+    try:
+        payload = parse_bridge_json(stderr or stdout)
+    except WindowsBackendError:
+        return (stderr or stdout).strip() or "TWAIN-драйвер завершился без описания ошибки."
+    if isinstance(payload, dict) and payload.get("error"):
+        return str(payload["error"])
+    return (stderr or stdout).strip() or "Неизвестная ошибка TWAIN-драйвера."
+
+
+def run_twain_bridge(
+    action: str,
+    *values: object,
+    timeout: float = 15.0,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> Any:
+    command = build_twain_command(action, *values)
+    try:
+        result = runner(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
+            creationflags=windows_creation_flags(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise WindowsBackendError(f"Не удалось запустить Windows TWAIN: {exc}") from exc
+    if result.returncode != 0:
+        raise WindowsBackendError(twain_error_text(result.stdout, result.stderr))
+    return parse_bridge_json(result.stdout)
+
+
+def twain_device_profile(name: str) -> dict[str, object]:
+    name = name.strip()
+    if not name:
+        raise WindowsBackendError("TWAIN-драйвер вернул пустое имя источника.")
+    display_name = (
+        f"Kyocera {name}"
+        if "ecosys" in name.casefold() and "kyocera" not in name.casefold()
+        else name
+    )
+    return {
+        "name": display_name,
+        "url": "",
+        "device_id": name,
+        "transport": "Windows TWAIN",
+        "connection_kind": "windows-twain",
+        "backend": "twain",
+        "ip": "",
+        "saved_at": int(time.time()),
+        "profile_source": "windows-twain",
+        "adf_capabilities_known": True,
+        "adf_present": True,
+        "adf_duplex_supported": False,
+    }
+
+
+def discover_twain_scanners(match_filter: str = "") -> list[dict[str, object]]:
+    payload = run_twain_bridge("list", timeout=20.0)
+    if not isinstance(payload, list):
+        raise WindowsBackendError("Windows TWAIN вернул некорректный список устройств.")
+    filter_text = match_filter.casefold().strip()
+    profiles = []
+    for item in payload:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        profile = twain_device_profile(item)
+        haystack = " ".join(str(profile[key]) for key in ("name", "device_id", "transport"))
+        if not filter_text or filter_text in haystack.casefold():
+            profiles.append(profile)
+    return profiles
+
+
+def probe_twain_device(name: str) -> bool:
+    payload = run_twain_bridge("probe", name, timeout=10.0)
+    return bool(isinstance(payload, dict) and payload.get("present"))
+
+
+def build_twain_scan_command(
+    device_id: str,
+    output_dir: Path,
+    source: str,
+    mode: str,
+    dpi: int,
+    paper: str,
+) -> list[str]:
+    del paper  # The native source controls the scan area for now.
+    return build_twain_command("scan", device_id, output_dir, source, mode, dpi)
 
 
 def find_runtime_executable(name: str) -> Optional[str]:

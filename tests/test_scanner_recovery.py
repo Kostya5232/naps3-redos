@@ -43,6 +43,7 @@ class ScannerRecoveryTests(PatchedTestCase):
             set_status=mock.Mock(),
             _scan_once=mock.Mock(return_value=([Path("other.png")], "", self.other)),
             _scan_windows_wia=mock.Mock(),
+            _scan_windows_twain=mock.Mock(),
             _scan_direct_escl=mock.Mock(),
             _retryable_device_error=naps3.MainWindow._retryable_device_error,
             _device_busy_error=naps3.MainWindow._device_busy_error,
@@ -189,6 +190,22 @@ class ScannerRecoveryTests(PatchedTestCase):
             self.owner._scan_windows_wia.call_args.args[1]["device_id"],
             selected["device_id"],
         )
+        self.owner._scan_once.assert_not_called()
+        self.discovery.assert_not_called()
+
+    def test_twain_scan_uses_exact_selected_source_without_discovery(self):
+        selected = {
+            "name": "ECOSYS MA4000x (USB)",
+            "device_id": "ECOSYS MA4000x (USB)",
+            "backend": "twain",
+            "connection_kind": "windows-twain",
+        }
+        pages = [Path("first.png"), Path("second.png")]
+        self.owner._scan_windows_twain.return_value = (pages, "", selected)
+
+        self.assertEqual(self.scan(selected), (pages, selected))
+        self.owner._scan_windows_twain.assert_called_once()
+        self.assertEqual(self.owner._scan_windows_twain.call_args.args[1]["device_id"], selected["device_id"])
         self.owner._scan_once.assert_not_called()
         self.discovery.assert_not_called()
 

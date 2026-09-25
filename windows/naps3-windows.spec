@@ -6,10 +6,16 @@ import sys
 root = Path(SPECPATH).parent
 pdf_tool = Path(os.environ["PDFTOPPM_EXE"])
 wia_tool = Path(os.environ["WIA_BRIDGE_EXE"])
+twain_tool = Path(os.environ["TWAIN_BRIDGE_EXE"])
+twain_library = Path(os.environ["TWAIN_LIBRARY_DLL"])
+twain_license = Path(os.environ["TWAIN_LICENSE_TXT"])
 prefix = Path(sys.prefix)
 
 datas = [
     (str(wia_tool), "windows"),
+    (str(twain_tool), "windows"),
+    (str(twain_library), "windows"),
+    (str(twain_license), "windows"),
     (str(root / "naps3.png"), "."),
     (str(root / "naps3.svg"), "."),
 ]

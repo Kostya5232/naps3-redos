@@ -5,7 +5,7 @@
 %global _licensedir /usr/share/licenses
 
 Name:           naps3
-Version:        0.9.4
+Version:        0.9.5
 Release:        1.red80
 Summary:        Сканирование документов через SANE и eSCL
 License:        MIT AND BSD-2-Clause
@@ -122,6 +122,11 @@ exit 0
 %license %{_licensedir}/%{name}/LICENSE.ipp-usb
 
 %changelog
+* Fri Sep 25 2026 NAPS3 contributors <noreply@localhost> - 0.9.5-1.red80
+- Add an isolated Windows TWAIN backend for scanners with failing WIA drivers
+- Verify Kyocera ECOSYS MA4000x USB flatbed and feeder scans
+- Keep Linux scanning behavior and existing WIA profiles unchanged
+
 * Fri Sep 25 2026 NAPS3 contributors <noreply@localhost> - 0.9.4-1.red80
 - Pin tested Cairo version in Windows package to fix early GUI startup crash
 - Check that the packaged Windows application opens its visible window

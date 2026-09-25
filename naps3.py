@@ -2,6 +2,11 @@
 """
 NAPS3 — графическое сканирование документов для РЕД ОС и Windows.
 
+Версия 0.9.5:
+- добавлено отдельное TWAIN-подключение Windows для сканеров с неисправным WIA;
+- подтверждено сканирование Kyocera ECOSYS MA4000x по USB со стекла и АПД;
+- TWAIN-задание ограничено по страницам и времени, выбор WIA сохранён.
+
 Версия 0.9.4:
 - исправлен аварийный запуск Windows-сборки до появления окна GTK;
 - в сборке закреплена проверенная версия Cairo, а CI проверяет открытие окна;
@@ -87,12 +92,16 @@ except ImportError:  # pragma: no cover - unavailable on Windows
 from windows_backend import (
     WindowsBackendError,
     bridge_error_text,
+    build_twain_scan_command,
     build_wia_scan_command,
+    discover_twain_scanners,
     discover_wia_scanners,
     find_runtime_executable,
+    probe_twain_device,
     probe_wia_device,
     resource_path,
     run_wia_bridge,
+    twain_error_text,
     windows_creation_flags,
 )
 
@@ -169,7 +178,7 @@ except ImportError as exc:
 
 APP_ID = "ru.redos.NAPS3"
 APP_NAME = "NAPS3"
-APP_VERSION = "0.9.4"
+APP_VERSION = "0.9.5"
 DEFAULT_MATCH = ""
 DEFAULT_SCANNER_NAME = "Сканер Windows" if IS_WINDOWS else "Сканер"
 DEFAULT_ESCL_URL = "http://127.0.0.1:60000/eSCL"
@@ -1423,10 +1432,18 @@ def discover_usb_scanners(
     Canon pixma, Epson, Brother and HP hpaio drivers.
     """
     if IS_WINDOWS:
-        try:
-            return discover_wia_scanners(match_filter)
-        except WindowsBackendError as exc:
-            raise Naps3Error(str(exc)) from exc
+        profiles: list[dict[str, object]] = []
+        errors: list[str] = []
+        for discover in (discover_wia_scanners, discover_twain_scanners):
+            try:
+                profiles.extend(discover(match_filter))
+            except WindowsBackendError as exc:
+                errors.append(str(exc))
+        if profiles:
+            return profiles
+        if errors:
+            raise Naps3Error("; ".join(errors))
+        return []
 
     profiles: list[dict[str, object]] = []
 
@@ -1530,13 +1547,17 @@ def choose_usb_profile(
         return None
     filter_text = match_filter.casefold().strip()
     if filter_text:
+        matches = []
         for profile in profiles:
             haystack = " ".join(
                 str(profile.get(key, ""))
                 for key in ("name", "device_id", "transport")
             ).casefold()
             if filter_text in haystack:
-                return profile
+                matches.append(profile)
+        if len(matches) == 1:
+            return matches[0]
+        return None
     if len(profiles) == 1:
         return profiles[0]
     # Multiple devices require an explicit choice in the dialog. Selecting a
@@ -2618,7 +2639,7 @@ def discover_scanner_profile(
     if IS_WINDOWS:
         raise Naps3Error(
             "Сканер Windows не найден. Убедитесь, что МФУ включено и "
-            "подключено, затем установите WIA-драйвер производителя."
+            "подключено, затем установите WIA- или TWAIN-драйвер производителя."
         )
 
     diagnostic = usb_diagnostic_text()
@@ -2856,8 +2877,8 @@ class USBScannerDialog(Gtk.Dialog):
 
         info = Gtk.Label(
             label=(
-                "NAPS3 показывает сканеры, установленные в Windows через "
-                "системный интерфейс WIA."
+                "NAPS3 показывает сканеры Windows через WIA и TWAIN. "
+                "Если WIA не сканирует, выберите TWAIN-вариант того же МФУ."
                 if IS_WINDOWS
                 else (
                     "NAPS3 проверяет driverless ipp-usb/eSCL и установленные "
@@ -2872,19 +2893,17 @@ class USBScannerDialog(Gtk.Dialog):
 
         self.combo = Gtk.ComboBoxText()
         for index, profile in enumerate(profiles):
-            backend = (
-                "Windows WIA"
-                if profile.get("connection_kind") == "windows-wia"
-                else (
-                    "HPLIP / hpaio"
-                    if profile.get("connection_kind") == "usb-hpaio"
-                    else (
-                        f"SANE / {profile.get('backend') or 'локальный'}"
-                        if profile.get("connection_kind") == "usb-sane"
-                        else "ipp-usb / eSCL"
-                    )
-                )
-            )
+            kind = profile.get("connection_kind")
+            if kind == "windows-wia":
+                backend = "Windows WIA"
+            elif kind == "windows-twain":
+                backend = "Windows TWAIN"
+            elif kind == "usb-hpaio":
+                backend = "HPLIP / hpaio"
+            elif kind == "usb-sane":
+                backend = f"SANE / {profile.get('backend') or 'локальный'}"
+            else:
+                backend = "ipp-usb / eSCL"
             self.combo.append(
                 str(index),
                 f"{profile_name(profile)} — {backend}",
@@ -4408,6 +4427,7 @@ class MainWindow(Gtk.ApplicationWindow):
         connection_caption = {
             "network": "Сеть",
             "windows-wia": "Windows",
+            "windows-twain": "Windows TWAIN",
         }.get(connection_kind, "USB")
         model_suffix = connection_caption
 
@@ -4450,6 +4470,11 @@ class MainWindow(Gtk.ApplicationWindow):
             )
             self.device_address_label.set_text(
                 str(profile.get("port") or "Устройство зарегистрировано в Windows")
+            )
+        elif connection_kind == "windows-twain":
+            self.device_connection_label.set_text("Драйвер Windows TWAIN")
+            self.device_address_label.set_text(
+                str(profile.get("device_id") or "Устройство TWAIN")
             )
         elif connection_kind == "usb-hpaio":
             self.device_connection_label.set_text(
@@ -4497,7 +4522,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 self.scanner_profile,
                 (
                     "Сохранённый профиль Windows загружен"
-                    if self.scanner_profile.get("backend") == "wia"
+                    if self.scanner_profile.get("backend") in {"wia", "twain"}
                     else "Сохранённый USB-профиль загружен"
                 ),
             )
@@ -4583,6 +4608,12 @@ class MainWindow(Gtk.ApplicationWindow):
                         raise Naps3Error(
                             "Выбранный сканер больше не зарегистрирован в "
                             "Windows. Проверьте подключение или выберите его заново."
+                        )
+                elif profile.get("backend") == "twain":
+                    if not device_id or not probe_twain_device(device_id):
+                        raise Naps3Error(
+                            "Выбранный TWAIN-источник больше не зарегистрирован "
+                            "в Windows. Проверьте драйвер или выберите сканер заново."
                         )
                 elif url:
                     if not probe_escl_url(url):
@@ -4770,7 +4801,7 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         self.set_busy(
             True,
-            "Поиск сканеров Windows WIA…"
+            "Поиск сканеров Windows WIA и TWAIN…"
             if IS_WINDOWS
             else "Поиск локальных сканеров…",
         )
@@ -4778,7 +4809,7 @@ class MainWindow(Gtk.ApplicationWindow):
             "checking",
             "Windows" if IS_WINDOWS else "USB",
             (
-                "Читается список установленных устройств WIA…"
+                "Читается список установленных устройств WIA и TWAIN…"
                 if IS_WINDOWS
                 else "Проверяются ipp-usb/eSCL и установленные SANE-драйверы…"
             ),
@@ -4819,12 +4850,12 @@ class MainWindow(Gtk.ApplicationWindow):
             match_filter = self.match_entry.get_text().strip()
             message = (
                 (
-                    f"Windows WIA не нашла сканер по фильтру «{match_filter}». "
+                    f"Windows не нашла сканер по фильтру «{match_filter}». "
                     if match_filter
                     else "Сканер Windows не найден. "
                 )
                 + "Убедитесь, что МФУ включено и подключено, затем "
-                "установите WIA-драйвер производителя."
+                "установите WIA- или TWAIN-драйвер производителя."
                 if IS_WINDOWS
                 else (
                     "Локальный сканер не найден. Убедитесь, что МФУ включено, "
@@ -4873,6 +4904,8 @@ class MainWindow(Gtk.ApplicationWindow):
             (
                 "Сканер подключён через Windows WIA."
                 if profile.get("backend") == "wia"
+                else "Сканер подключён через Windows TWAIN."
+                if profile.get("backend") == "twain"
                 else (
                     "USB-сканер подключён через HPLIP (hpaio)."
                     if profile.get("connection_kind") == "usb-hpaio"
@@ -4891,7 +4924,7 @@ class MainWindow(Gtk.ApplicationWindow):
             pass
         self.set_status(
             "Сканер Windows подключён"
-            if profile.get("backend") == "wia"
+            if profile.get("backend") in {"wia", "twain"}
             else "Локальный сканер подключён"
         )
         return False
@@ -5024,6 +5057,18 @@ class MainWindow(Gtk.ApplicationWindow):
                 f"«{profile_name(cached_profile)}». Нажмите «Подключить "
                 "сканер…» и выберите нужное МФУ перед сканированием.",
             )
+            return
+        if (
+            cached_profile
+            and cached_profile.get("backend") == "twain"
+            and source != "Flatbed"
+            and not self.ask_yes_no(
+                "Проверьте автоподатчик",
+                "Убедитесь, что листы лежат в АПД. TWAIN-драйвер может не "
+                "сообщать о наличии бумаги и при пустом податчике может "
+                "отсканировать стекло. Продолжить сканирование?",
+            )
+        ):
             return
         stream_adf = self.stream_adf_check.get_active()
         adjustment_message = ""
@@ -5279,17 +5324,20 @@ class MainWindow(Gtk.ApplicationWindow):
         mode: str,
         dpi: int,
         paper: str,
+        backend: str = "wia",
     ) -> tuple[list[Path], str, dict[str, object]]:
-        """Scan the exact selected Windows device through the bundled WIA bridge."""
+        """Scan the exact selected Windows source through its isolated bridge."""
+        is_twain = backend == "twain"
         device_id = str(profile.get("device_id") or "").strip()
         if not device_id:
-            return [], "В профиле WIA нет идентификатора устройства.", profile
+            return [], "В профиле нет идентификатора устройства.", profile
 
         for pattern in ("page-*", "raw-*"):
             for old_file in scan_dir.glob(pattern):
                 old_file.unlink(missing_ok=True)
 
-        command = build_wia_scan_command(
+        build_command = build_twain_scan_command if is_twain else build_wia_scan_command
+        command = build_command(
             device_id,
             scan_dir,
             source,
@@ -5300,19 +5348,20 @@ class MainWindow(Gtk.ApplicationWindow):
         GLib.idle_add(
             self._set_device_profile,
             profile,
-            "Соединение WIA установлено. Идёт сканирование…",
+            "Соединение TWAIN установлено. Идёт сканирование…"
+            if is_twain else "Соединение WIA установлено. Идёт сканирование…",
             "ready",
         )
         GLib.idle_add(
             self.set_status,
             (
-                "Сканирование со стекла через Windows WIA…"
+                f"Сканирование со стекла через Windows {backend.upper()}…"
                 if source == "Flatbed"
-                else "Сканирование всех листов из автоподатчика через Windows WIA…"
+                else f"Сканирование листов из автоподатчика через Windows {backend.upper()}…"
             ),
         )
         append_scan_log(
-            f"WIA engine device={device_id} source={source} dpi={dpi} mode={mode}"
+            f"{backend.upper()} engine device={device_id} source={source} dpi={dpi} mode={mode}"
         )
 
         try:
@@ -5326,11 +5375,40 @@ class MainWindow(Gtk.ApplicationWindow):
                 creationflags=windows_creation_flags(),
             )
         except OSError as exc:
-            return [], f"Не удалось запустить Windows WIA: {exc}", profile
+            return [], f"Не удалось запустить Windows {backend.upper()}: {exc}", profile
 
         self.current_process = process
         try:
-            stdout, stderr = process.communicate()
+            if is_twain:
+                started = time.monotonic()
+                last_progress = started
+                seen_pages = 0
+                stalled = False
+                while process.poll() is None:
+                    page_count = len(list(scan_dir.glob("raw-*.bmp")))
+                    if page_count > seen_pages:
+                        seen_pages = page_count
+                        last_progress = time.monotonic()
+                    now = time.monotonic()
+                    if (
+                        now - last_progress > (40 if source != "Flatbed" else 125)
+                        or now - started > 310
+                    ):
+                        process.kill()
+                        stalled = True
+                        break
+                    time.sleep(0.2)
+                stdout, stderr = process.communicate()
+                if stalled:
+                    append_scan_log(
+                        f"TWAIN watchdog stopped unresponsive driver; pages={seen_pages}"
+                    )
+                    if seen_pages == 0:
+                        if '"error"' in stderr:
+                            return [], twain_error_text(stdout, stderr), profile
+                        return [], "TWAIN-сканер не ответил вовремя. Задание остановлено.", profile
+            else:
+                stdout, stderr = process.communicate()
         finally:
             if self.current_process is process:
                 self.current_process = None
@@ -5346,8 +5424,8 @@ class MainWindow(Gtk.ApplicationWindow):
             raise Naps3Error("Сканирование отменено пользователем.")
 
         if not raw_files:
-            error = bridge_error_text(stdout, stderr)
-            append_scan_log(f"WIA scan failed: {compact_details(error, 600)}")
+            error = (twain_error_text if is_twain else bridge_error_text)(stdout, stderr)
+            append_scan_log(f"{backend.upper()} scan failed: {compact_details(error, 600)}")
             return [], error, profile
 
         GLib.idle_add(
@@ -5379,14 +5457,27 @@ class MainWindow(Gtk.ApplicationWindow):
 
         if process.returncode != 0:
             append_scan_log(
-                "WIA preserved partial pages after backend error: "
-                f"{compact_details(bridge_error_text(stdout, stderr), 600)}"
+                f"{backend.upper()} preserved partial pages after backend error: "
+                f"{compact_details((twain_error_text if is_twain else bridge_error_text)(stdout, stderr), 600)}"
             )
-        append_scan_log(f"WIA scan complete pages={len(files)}")
+        append_scan_log(f"{backend.upper()} scan complete pages={len(files)}")
         updated = dict(profile)
-        updated["scan_engine"] = "windows-wia-v1"
+        updated["scan_engine"] = "windows-twain-v1" if is_twain else "windows-wia-v1"
         updated["saved_at"] = int(time.time())
         return files, "", updated
+
+    def _scan_windows_twain(
+        self,
+        scan_dir: Path,
+        profile: dict[str, object],
+        source: str,
+        mode: str,
+        dpi: int,
+        paper: str,
+    ) -> tuple[list[Path], str, dict[str, object]]:
+        return self._scan_windows_wia(
+            scan_dir, profile, source, mode, dpi, paper, backend="twain"
+        )
 
     def _scan_once(
         self,
@@ -6193,7 +6284,23 @@ class MainWindow(Gtk.ApplicationWindow):
                     time.sleep(2.0)
                     continue
                 break
-            raise Naps3Error(friendly_scan_error(error, self.cancel_requested))
+            message = friendly_scan_error(error, self.cancel_requested)
+            if "kyocera" in profile_name(profile).casefold():
+                message += (
+                    " Если установлен TWAIN-драйвер Kyocera, нажмите "
+                    "«Подключить сканер…» и выберите вариант Windows TWAIN."
+                )
+            raise Naps3Error(message)
+
+        if profile.get("backend") == "twain":
+            files, error, profile = self._scan_windows_twain(
+                scan_dir, profile, source, mode, dpi, paper
+            )
+            if files:
+                return files, profile
+            if self.cancel_requested:
+                raise Naps3Error("Сканирование отменено пользователем.")
+            raise Naps3Error(error or "TWAIN-сканер не передал страницу.")
 
         if (
             IS_WINDOWS

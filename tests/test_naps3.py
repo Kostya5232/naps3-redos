@@ -225,6 +225,15 @@ class LocalScannerDiscoveryTests(unittest.TestCase):
             naps3.choose_usb_profile(profiles, "Canon"),
             profiles[0],
         )
+        self.assertIsNone(naps3.choose_usb_profile(profiles, "Kyocera"))
+
+    def test_same_scanner_with_wia_and_twain_requires_explicit_choice(self) -> None:
+        profiles = [
+            {"name": "Kyocera MA4000x", "backend": "wia"},
+            {"name": "ECOSYS MA4000x (USB)", "backend": "twain"},
+        ]
+        self.assertIsNone(naps3.choose_usb_profile(profiles, "MA4000x"))
+        self.assertIs(naps3.choose_usb_profile(profiles, "ECOSYS MA4000x (USB)"), profiles[1])
 
 
 class NetworkScannerDiscoveryTests(unittest.TestCase):

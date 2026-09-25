@@ -14,9 +14,15 @@ fi
 export PDFTOPPM_EXE
 
 "$PYTHON" windows/build_wia_bridge.py
+"$PYTHON" windows/build_twain_bridge.py
 WIA_BRIDGE_FILE="$ROOT/build/windows-wia/NAPS3.WiaBridge.exe"
+TWAIN_BRIDGE_FILE="$ROOT/build/windows-twain/NAPS3.TwainBridge.exe"
 test -s "$WIA_BRIDGE_FILE"
+test -s "$TWAIN_BRIDGE_FILE"
 export WIA_BRIDGE_EXE="$(cygpath -w "$WIA_BRIDGE_FILE")"
+export TWAIN_BRIDGE_EXE="$(cygpath -w "$TWAIN_BRIDGE_FILE")"
+export TWAIN_LIBRARY_DLL="$(cygpath -w "$ROOT/build/windows-twain/NTwain.dll")"
+export TWAIN_LICENSE_TXT="$(cygpath -w "$ROOT/build/windows-twain/NTwain.LICENSE.txt")"
 
 "$PYTHON" - <<'PY'
 from pathlib import Path

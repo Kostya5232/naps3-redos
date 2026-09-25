@@ -94,6 +94,45 @@ class WindowsBackendTests(unittest.TestCase):
                     "probe", runner=lambda *_args, **_kwargs: completed
                 )
 
+    def test_twain_discovery_keeps_exact_source_and_filters(self) -> None:
+        with mock.patch.object(
+            windows_backend,
+            "run_twain_bridge",
+            return_value=["ECOSYS MA4000x (USB)", "Other Scanner"],
+        ):
+            profiles = windows_backend.discover_twain_scanners("ma4000")
+        self.assertEqual(len(profiles), 1)
+        self.assertEqual(profiles[0]["device_id"], "ECOSYS MA4000x (USB)")
+        self.assertEqual(profiles[0]["name"], "Kyocera ECOSYS MA4000x (USB)")
+        self.assertEqual(profiles[0]["backend"], "twain")
+        self.assertFalse(profiles[0]["adf_duplex_supported"])
+
+        with mock.patch.object(
+            windows_backend, "run_twain_bridge", return_value=["ECOSYS MA4000x (USB)"]
+        ):
+            self.assertEqual(len(windows_backend.discover_twain_scanners("Kyocera")), 1)
+
+    def test_twain_scan_command_uses_selected_source_without_scripts(self) -> None:
+        with mock.patch.object(
+            windows_backend,
+            "twain_bridge_executable",
+            return_value=Path("NAPS3.TwainBridge.exe"),
+        ), mock.patch.object(Path, "is_file", return_value=True):
+            command = windows_backend.build_twain_scan_command(
+                "ECOSYS MA4000x (USB)", Path("pages"), "ADF", "Color", 300, "A4"
+            )
+        self.assertEqual(command, [
+            "NAPS3.TwainBridge.exe", "scan", "ECOSYS MA4000x (USB)",
+            "pages", "ADF", "Color", "300",
+        ])
+        self.assertNotIn("powershell", " ".join(command).casefold())
+
+    def test_twain_error_ignores_native_stderr_diagnostic(self) -> None:
+        error = windows_backend.twain_error_text(
+            "", 'CreateDirectory() errorCode == 183\n{"error":"Нет бумаги"}\n'
+        )
+        self.assertEqual(error, "Нет бумаги")
+
 
 if __name__ == "__main__":
     unittest.main()

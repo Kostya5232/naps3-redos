@@ -100,7 +100,7 @@ jobs:
       - name: Выполнить тесты Windows
         shell: msys2 {0}
         run: |
-          python -m py_compile naps3.py windows_backend.py windows/build_wia_bridge.py windows/startup_hook.py windows/pin_cairo.py windows/check_gui_startup.py
+          python -m py_compile naps3.py windows_backend.py windows/build_wia_bridge.py windows/build_twain_bridge.py windows/startup_hook.py windows/pin_cairo.py windows/check_gui_startup.py
           python -m unittest discover -v -s tests -p 'test_*.py'
 
       - name: Собрать и проверить нативный WIA-мост
@@ -108,6 +108,10 @@ jobs:
         run: |
           python windows/build_wia_bridge.py
           ./build/windows-wia/NAPS3.WiaBridge.exe -Action selftest
+
+      - name: Собрать нативный TWAIN-мост
+        shell: msys2 {0}
+        run: python windows/build_twain_bridge.py
 
       - name: Собрать переносимую программу
         shell: msys2 {0}
@@ -182,11 +186,12 @@ jobs:
         run: |
           set -Eeuo pipefail
           cat > release-notes.md <<'EOF'
-          Версия 0.9.4 для РЕД ОС 8 x86_64 и Windows 10/11 x64.
+          Версия 0.9.5 для РЕД ОС 8 x86_64 и Windows 10/11 x64.
 
-          - Исправлен сбой Windows-сборки 0.9.3 до появления окна: пакет включает проверенную DLL Cairo 1.18.4-4 с контролем SHA-256.
-          - Проверка сборки ждёт появления настоящего окна NAPS3 и контролирует, что процесс остаётся работающим.
-          - Сканирование Kyocera ECOSYS MA4000x по USB в Windows пока не подтверждено: официальный WIA-драйвер на проверенном ПК возвращает 0x80210001 при подключении. Исправление запуска не устраняет этот сбой.
+          - Добавлено отдельное подключение Windows TWAIN без PowerShell для сканеров, у которых WIA возвращает ошибку.
+          - На Kyocera ECOSYS MA4000x через USB проверены сканирование со стекла и пакет из пяти листов АПД. WIA-профили остаются прежними: TWAIN выбирается явно через «Подключить сканер…».
+          - TWAIN-сканирование работает в отдельном 32-битном процессе с ограничением 40 страниц и остановкой при зависании.
+          - Драйвер Kyocera не сообщает достоверно о наличии бумаги в АПД и может передать скан со стекла при пустом податчике. Перед запуском из АПД программа просит подтвердить наличие листов.
           - Возможности сканирования РЕД ОС и предыдущие исправления Windows сохранены.
 
           `NAPS3-latest-Windows-x64.exe` — постоянная ссылка на установщик Windows.
