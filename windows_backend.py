@@ -88,7 +88,9 @@ def bridge_error_text(stdout: str, stderr: str) -> str:
         return combined
     message = str(payload.get("error") or "Ошибка Windows WIA").strip()
     hresult = str(payload.get("hresult") or "").strip()
-    return f"WIA {hresult}: {message}" if hresult else message
+    stage = str(payload.get("stage") or "").strip()
+    description = f"WIA {hresult}: {message}" if hresult else message
+    return f"{description} (этап: {stage})" if stage else description
 
 
 def run_wia_bridge(

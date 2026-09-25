@@ -5,7 +5,7 @@
 %global _licensedir /usr/share/licenses
 
 Name:           naps3
-Version:        0.9.2
+Version:        0.9.3
 Release:        1.red80
 Summary:        Сканирование документов через SANE и eSCL
 License:        MIT AND BSD-2-Clause
@@ -122,6 +122,11 @@ exit 0
 %license %{_licensedir}/%{name}/LICENSE.ipp-usb
 
 %changelog
+* Fri Sep 25 2026 NAPS3 contributors <noreply@localhost> - 0.9.3-1.red80
+- Correct WIA flatbed and feeder item selection on Windows
+- Prevent a search filter from scanning a different saved device
+- Retry transient WIA general errors only on the selected scanner
+
 * Fri Sep 11 2026 NAPS3 contributors <noreply@localhost> - 0.9.2-1.red80
 - Replace the Windows PowerShell WIA bridge with a native helper
 - Keep the Windows GUI available when optional scanner components are blocked

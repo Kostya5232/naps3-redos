@@ -22,6 +22,15 @@ class WindowsBackendTests(unittest.TestCase):
         )
         self.assertEqual(error, "WIA 0x80210003: No paper")
 
+    def test_bridge_error_reports_failed_scan_stage(self) -> None:
+        error = windows_backend.bridge_error_text(
+            "",
+            '{"error":"Unknown device error","hresult":"0x80210001","stage":"transfer"}',
+        )
+        self.assertEqual(
+            error, "WIA 0x80210001: Unknown device error (этап: transfer)"
+        )
+
     def test_wia_profile_maps_capabilities(self) -> None:
         profile = windows_backend.wia_device_profile({
             "device_id": "wia:kyocera",
