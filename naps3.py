@@ -2,7 +2,10 @@
 """
 NAPS3 — графическое сканирование документов для РЕД ОС и Windows.
 
-Версия 0.9.2:
+Версия 0.9.3:
+- исправлен выбор стекла и автоподатчика в Windows WIA;
+- фильтр поиска больше не позволяет случайно сканировать сохранённым другим МФУ;
+- общая ошибка WIA повторяется один раз для того же устройства;
 - Windows запускается без выполнения PowerShell-скриптов;
 - WIA работает через поставляемый нативный NAPS3.WiaBridge.exe;
 - ранние ошибки Windows записываются в startup.log и показываются пользователю;
@@ -161,7 +164,7 @@ except ImportError as exc:
 
 APP_ID = "ru.redos.NAPS3"
 APP_NAME = "NAPS3"
-APP_VERSION = "0.9.2"
+APP_VERSION = "0.9.3"
 DEFAULT_MATCH = ""
 DEFAULT_SCANNER_NAME = "Сканер Windows" if IS_WINDOWS else "Сканер"
 DEFAULT_ESCL_URL = "http://127.0.0.1:60000/eSCL"
@@ -501,6 +504,14 @@ def friendly_scan_error(raw: str, cancelled: bool = False) -> str:
         return "Сканер обнаружил подачу нескольких листов. Проверьте стопку бумаги."
     if "0x80210007" in lower or "warming up" in lower:
         return "Сканер ещё прогревается. Подождите несколько секунд и повторите операцию."
+    if "0x80210001" in lower:
+        return (
+            "Драйвер Windows WIA сообщил об общей ошибке сканирования. "
+            "Разбудите МФУ и попробуйте 300 dpi. Если ошибка повторится, "
+            "проверьте сканирование через приложение «Сканер Windows» и "
+            "WIA-драйвер производителя.\n\n"
+            f"Технические сведения: {details}"
+        )
     if (
         "0x80210005" in lower
         or "0x80210008" in lower
@@ -948,6 +959,18 @@ def normalized_match_filter(value: object) -> str:
 
 def profile_name(profile: dict[str, object]) -> str:
     return str(profile.get("name") or DEFAULT_SCANNER_NAME)
+
+
+def profile_matches_filter(profile: dict[str, object], match_filter: str) -> bool:
+    """Keep a search filter from silently scanning an unrelated saved device."""
+    needle = match_filter.casefold().strip()
+    if not needle:
+        return True
+    searchable = " ".join(
+        str(profile.get(key) or "")
+        for key in ("name", "device_id", "port", "transport")
+    ).casefold()
+    return needle in searchable
 
 
 def profile_url(profile: dict[str, object]) -> str:
@@ -3482,7 +3505,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.match_entry = Gtk.Entry()
         self._add_labeled_widget(
             settings_box,
-            "Фильтр устройства",
+            "Фильтр поиска устройства",
             self.match_entry,
         )
 
@@ -4788,15 +4811,29 @@ class MainWindow(Gtk.ApplicationWindow):
             return False
         if not profiles:
             diagnostic = "" if IS_WINDOWS else usb_diagnostic_text()
+            match_filter = self.match_entry.get_text().strip()
             message = (
-                "Сканер Windows не найден. Убедитесь, что МФУ включено и "
-                "подключено, затем установите WIA-драйвер производителя."
+                (
+                    f"Windows WIA не нашла сканер по фильтру «{match_filter}». "
+                    if match_filter
+                    else "Сканер Windows не найден. "
+                )
+                + "Убедитесь, что МФУ включено и подключено, затем "
+                "установите WIA-драйвер производителя."
                 if IS_WINDOWS
                 else (
                     "Локальный сканер не найден. Убедитесь, что МФУ включено, "
                     "USB-кабель подключён и установлен подходящий SANE-драйвер."
                 )
             )
+            if self.scanner_profile and match_filter and not profile_matches_filter(
+                self.scanner_profile, match_filter
+            ):
+                message += (
+                    f"\n\nРанее выбранное устройство «{profile_name(self.scanner_profile)}» "
+                    "остаётся в профиле. Оно не соответствует фильтру и не "
+                    "будет использовано при сканировании."
+                )
             if diagnostic:
                 message += f"\n\nДиагностика: {diagnostic}"
             self._set_device_status("error", "Не найден", message)
@@ -4975,6 +5012,14 @@ class MainWindow(Gtk.ApplicationWindow):
             if self.scanner_profile
             else None
         )
+        if cached_profile and not profile_matches_filter(cached_profile, match_filter):
+            self.show_error(
+                "Выбран другой сканер",
+                f"В фильтре указан «{match_filter}», а рабочее устройство — "
+                f"«{profile_name(cached_profile)}». Нажмите «Подключить "
+                "сканер…» и выберите нужное МФУ перед сканированием.",
+            )
+            return
         stream_adf = self.stream_adf_check.get_active()
         adjustment_message = ""
 
@@ -5197,6 +5242,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 "failed to open",
                 "device not found",
                 "0x80210003",  # WIA_ERROR_PAPER_EMPTY
+                "0x80210001",  # WIA_ERROR_GENERAL_ERROR may be transient
                 "0x80210005",  # WIA_ERROR_OFFLINE
                 "0x80210006",  # WIA_ERROR_BUSY
                 "0x80210007",  # WIA_ERROR_WARMING_UP

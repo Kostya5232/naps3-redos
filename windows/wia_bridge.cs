@@ -12,7 +12,9 @@ internal static class WiaBridge
     private const int PropertyDeviceDescription = 4;
     private const int PropertyPortName = 6;
     private const int PropertyDeviceName = 7;
-    private const int PropertyItemCategory = 1029;
+    // WIA_IPA_ITEM_CATEGORY (wiadef.h). 1029 is not the item category, so the
+    // old bridge always fell back to the first item even for a flatbed scan.
+    private const int PropertyItemCategory = 4125;
     private const int PropertyDocumentHandlingCapabilities = 3086;
     private const int PropertyDocumentHandlingSelect = 3088;
     private const int PropertyPages = 3096;
@@ -38,6 +40,7 @@ internal static class WiaBridge
     private const string CategoryFeeder = "{FE131934-F84C-42AD-8DA4-6129CDDD7288}";
     private const string ErrorPaperEmpty = "0x80210003";
     private const string StatusEndOfMedia = "0x00210001";
+    private static string CurrentStage = "initialization";
 
     [STAThread]
     private static int Main(string[] arguments)
@@ -49,6 +52,7 @@ internal static class WiaBridge
         {
             if (action == "selftest")
             {
+                CheckSourceSelection();
                 WriteJson(new Dictionary<string, object>
                 {
                     { "ok", true },
@@ -81,6 +85,7 @@ internal static class WiaBridge
                     "Не указан идентификатор выбранного WIA-сканера."
                 );
             }
+            CurrentStage = "find-device";
             dynamic deviceInfo = GetDeviceInfo(manager, deviceId);
             if (deviceInfo == null)
             {
@@ -116,7 +121,8 @@ internal static class WiaBridge
             Console.Error.WriteLine(Json(new Dictionary<string, object>
             {
                 { "error", InnermostMessage(error) },
-                { "hresult", HResultHex(error) }
+                { "hresult", HResultHex(error) },
+                { "stage", CurrentStage }
             }));
             return 1;
         }
@@ -329,6 +335,7 @@ internal static class WiaBridge
     {
         string wantedCategory = source == "Flatbed" ? CategoryFlatbed : CategoryFeeder;
         dynamic fallback = null;
+        bool hasKnownSourceItem = false;
         foreach (dynamic item in device.Items)
         {
             if (fallback == null)
@@ -336,12 +343,81 @@ internal static class WiaBridge
                 fallback = item;
             }
             string category = PropertyText(item.Properties, PropertyItemCategory, "");
+            if (String.Equals(category, CategoryFlatbed, StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(category, CategoryFeeder, StringComparison.OrdinalIgnoreCase))
+            {
+                hasKnownSourceItem = true;
+            }
             if (String.Equals(category, wantedCategory, StringComparison.OrdinalIgnoreCase))
             {
                 return item;
             }
         }
+        // Legacy WIA 1.x drivers expose one unclassified transfer item. A WIA
+        // 2.x driver with categorized items must never scan the other source.
+        if (hasKnownSourceItem)
+        {
+            throw new InvalidOperationException(
+                source == "Flatbed"
+                    ? "Драйвер WIA не предоставил сканирование со стекла."
+                    : "Драйвер WIA не предоставил автоподатчик."
+            );
+        }
         return fallback;
+    }
+
+    // The self-test catches accidental fallback to the feeder when flatbed is
+    // requested and a driver lists the feeder first.
+    private sealed class TestProperty
+    {
+        public int PropertyID { get; set; }
+        public object Value { get; set; }
+    }
+
+    private sealed class TestItem
+    {
+        public List<TestProperty> Properties { get; set; }
+    }
+
+    private sealed class TestDevice
+    {
+        public List<TestItem> Items { get; set; }
+    }
+
+    private static void CheckSourceSelection()
+    {
+        TestItem feeder = new TestItem
+        {
+            Properties = new List<TestProperty>
+            {
+                new TestProperty { PropertyID = 4125, Value = CategoryFeeder }
+            }
+        };
+        TestItem flatbed = new TestItem
+        {
+            Properties = new List<TestProperty>
+            {
+                new TestProperty { PropertyID = 4125, Value = CategoryFlatbed }
+            }
+        };
+        TestDevice device = new TestDevice
+        {
+            Items = new List<TestItem> { feeder, flatbed }
+        };
+        if (!Object.ReferenceEquals((object)GetTransferItem(device, "Flatbed"), flatbed) ||
+            !Object.ReferenceEquals((object)GetTransferItem(device, "ADF"), feeder))
+        {
+            throw new InvalidOperationException("WIA source selection self-test failed.");
+        }
+        TestItem legacy = new TestItem { Properties = new List<TestProperty>() };
+        TestDevice legacyDevice = new TestDevice
+        {
+            Items = new List<TestItem> { legacy }
+        };
+        if (!Object.ReferenceEquals((object)GetTransferItem(legacyDevice, "Flatbed"), legacy))
+        {
+            throw new InvalidOperationException("Legacy WIA source self-test failed.");
+        }
     }
 
     private static int SetScanProperties(
@@ -426,7 +502,9 @@ internal static class WiaBridge
             File.Delete(path);
         }
 
+        CurrentStage = "connect";
         dynamic device = deviceInfo.Connect();
+        CurrentStage = "select-source";
         dynamic item = GetTransferItem(device, source);
         if (item == null)
         {
@@ -454,6 +532,7 @@ internal static class WiaBridge
             );
         }
 
+        CurrentStage = "set-properties";
         int effectiveDpi = SetScanProperties(device, item, source, mode, dpi, paper);
         List<string> files = new List<string>();
         int maximumImages = source == "Flatbed" ? 1 : 500;
@@ -461,6 +540,7 @@ internal static class WiaBridge
         {
             try
             {
+                CurrentStage = "transfer";
                 dynamic image = item.Transfer(FormatBmp);
                 if (image == null)
                 {
@@ -478,6 +558,7 @@ internal static class WiaBridge
                 {
                     File.Delete(path);
                 }
+                CurrentStage = "save-image";
                 image.SaveFile(path);
                 files.Add(path);
             }

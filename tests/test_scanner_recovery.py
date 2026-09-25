@@ -215,6 +215,70 @@ class ScannerRecoveryTests(PatchedTestCase):
         sleep.assert_called_once_with(2.0)
         self.discovery.assert_not_called()
 
+    def test_generic_wia_error_retries_only_selected_device(self):
+        selected = {
+            "name": "Kyocera ECOSYS MA4000x",
+            "device_id": r"WIA\\selected-kyocera",
+            "backend": "wia",
+            "connection_kind": "windows-wia",
+        }
+        page = Path("page.png")
+        self.owner._scan_windows_wia.side_effect = [
+            ([], "WIA 0x80210001: Unknown device error", selected),
+            ([page], "", selected),
+        ]
+        sleep = self.patch(naps3.time, "sleep")
+
+        self.assertEqual(self.scan(selected), ([page], selected))
+        self.assertEqual(
+            [call.args[1]["device_id"] for call in self.owner._scan_windows_wia.call_args_list],
+            [selected["device_id"], selected["device_id"]],
+        )
+        sleep.assert_called_once_with(2.0)
+        self.discovery.assert_not_called()
+
+    def test_search_filter_cannot_start_scan_on_saved_hp(self):
+        self.patch(naps3, "IS_WINDOWS", new=True)
+        owner = SimpleNamespace(
+            is_busy=False,
+            source_combo=mock.Mock(get_active_id=lambda: "Flatbed"),
+            mode_combo=mock.Mock(get_active_id=lambda: "Color"),
+            dpi_combo=mock.Mock(get_active_id=lambda: "600"),
+            paper_combo=mock.Mock(get_active_id=lambda: "A4"),
+            match_entry=mock.Mock(get_text=lambda: "Kyocera"),
+            scanner_profile={
+                "name": "NPI28F981 (HP LaserJet MFP M227sdn)",
+                "device_id": "wia:hp",
+            },
+            show_error=mock.Mock(),
+        )
+
+        naps3.MainWindow.start_scan(owner)
+
+        owner.show_error.assert_called_once()
+        self.assertIn("Kyocera", owner.show_error.call_args.args[1])
+        self.assertIn("HP", owner.show_error.call_args.args[1])
+        self.discovery.assert_not_called()
+
+    def test_empty_kyocera_search_explains_saved_hp_is_not_selected(self):
+        self.patch(naps3, "IS_WINDOWS", new=True)
+        owner = SimpleNamespace(
+            set_busy=mock.Mock(),
+            match_entry=mock.Mock(get_text=lambda: "Kyocera"),
+            scanner_profile={"name": "HP LaserJet MFP M227sdn"},
+            _set_device_status=mock.Mock(),
+            show_error=mock.Mock(),
+            set_status=mock.Mock(),
+        )
+
+        naps3.MainWindow._usb_scanners_ready(owner, [], "")
+
+        message = owner.show_error.call_args.args[1]
+        self.assertIn("Kyocera", message)
+        self.assertIn("HP LaserJet", message)
+        self.assertIn("не будет использовано", message)
+        self.assertEqual(owner.scanner_profile["name"], "HP LaserJet MFP M227sdn")
+
 
 class StartupProfileTests(PatchedTestCase):
     def setUp(self):
