@@ -43,4 +43,5 @@ mkdir -p "$ROOT/build/windows" "$ROOT/dist/windows"
     "$ROOT/windows/naps3-windows.spec"
 
 test -s "$ROOT/dist/windows/NAPS3/NAPS3.exe"
+"$PYTHON" windows/pin_cairo.py "$ROOT/dist/windows/NAPS3"
 echo "Готово: $ROOT/dist/windows/NAPS3/NAPS3.exe"

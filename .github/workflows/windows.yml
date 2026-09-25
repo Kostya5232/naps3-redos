@@ -34,7 +34,7 @@ jobs:
       - name: Проверить Python
         shell: msys2 {0}
         run: |
-          python -m py_compile naps3.py windows_backend.py windows/build_wia_bridge.py windows/startup_hook.py
+          python -m py_compile naps3.py windows_backend.py windows/build_wia_bridge.py windows/startup_hook.py windows/pin_cairo.py windows/check_gui_startup.py
           python -m unittest discover -v -s tests -p 'test_*.py'
 
       - name: Собрать и проверить нативный WIA-мост
@@ -61,6 +61,10 @@ jobs:
           if (-not (Select-String -LiteralPath $startupLog -SimpleMatch "NAPS3 start" -Quiet)) {
             throw "В журнале запуска отсутствует отметка NAPS3 start"
           }
+
+      - name: Проверить появление окна Windows
+        shell: msys2 {0}
+        run: python windows/check_gui_startup.py dist/windows/NAPS3/NAPS3.exe
 
       - name: Собрать установщик и ZIP
         shell: pwsh
