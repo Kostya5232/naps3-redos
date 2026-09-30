@@ -389,15 +389,19 @@ def staged_export_files(
                     pass
 
 
-@dataclass(slots=True)
+@dataclass
 class Page:
+    __slots__ = ("path", "label")
+
     path: Path
     label: str
 
 
-@dataclass(slots=True)
+@dataclass
 class EsclJobSnapshot:
     """State of one exact ScanJob reported inside ScannerStatus."""
+
+    __slots__ = ("uri", "state", "images_completed", "images_to_transfer", "age")
 
     uri: str
     state: str

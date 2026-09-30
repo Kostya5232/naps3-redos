@@ -37,7 +37,7 @@ jobs:
         shell: pwsh
         run: |
           python -c "import struct,sys; assert sys.version_info[:2] == (3,8) and struct.calcsize('P') == 4"
-          python -m compileall -q naps3.py pdf_import.py windows_backend.py windows tests/test_pdf_import.py
+          python -m compileall -q naps3.py pdf_import.py windows_backend.py windows tests
 
       - name: Fetch pinned GTK build recipe
         shell: pwsh
@@ -92,8 +92,6 @@ jobs:
         run: |
           $env:Path = 'C:\gtk-build\gtk\Win32\release\bin;' + $env:Path
           $env:GI_TYPELIB_PATH = 'C:\gtk-build\gtk\Win32\release\lib\girepository-1.0'
-          python -m unittest discover -v -s tests -p 'test_*.py'
-          if ($LASTEXITCODE -ne 0) { throw 'Unit tests failed' }
           $exe = '.\dist\windows7-x86\NAPS3\NAPS3.exe'
           python -c "import struct; p=open(r'$exe','rb').read(); o=struct.unpack_from('<I',p,0x3c)[0]; assert struct.unpack_from('<H',p,o+4)[0]==0x14c, 'NAPS3.exe is not x86'"
           if ($LASTEXITCODE -ne 0) { throw 'Package architecture is not x86' }
@@ -101,6 +99,8 @@ jobs:
           if ($process.ExitCode -ne 0) { throw "Packaged self-test failed: $($process.ExitCode)" }
           python windows\check_gui_startup.py $exe
           if ($LASTEXITCODE -ne 0) { throw 'Packaged GUI did not open' }
+          python -m unittest discover -v -s tests -p 'test_*.py'
+          if ($LASTEXITCODE -ne 0) { throw 'Unit tests failed' }
 
       - name: Create x86 installer and portable ZIP
         shell: pwsh

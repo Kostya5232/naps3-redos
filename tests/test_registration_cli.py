@@ -39,14 +39,15 @@ class RegistrationCliTests(unittest.TestCase):
             0,
             stdout=b"  --source Flatbed|ADF|ADF Duplex\n",
         )
-        with (
-            mock.patch.object(naps3.subprocess, "run", return_value=probe) as run,
-            mock.patch.object(
+        with contextlib.ExitStack() as stack:
+            run = stack.enter_context(
+                mock.patch.object(naps3.subprocess, "run", return_value=probe)
+            )
+            stack.enter_context(mock.patch.object(
                 naps3,
                 "local_sane_backend_environment",
                 return_value={"LC_ALL": "C"},
-            ),
-        ):
+            ))
             profile, backup = naps3.register_scanner_profile(
                 device_id="pixma:04A92737_1M66352840",
                 name="Canon MF4410",
@@ -113,11 +114,10 @@ class RegistrationCliTests(unittest.TestCase):
 
     def test_registration_cli_refuses_root_and_returns_json_error(self):
         output = io.StringIO()
-        with (
-            mock.patch.object(naps3.os, "geteuid", return_value=0, create=True),
-            mock.patch.object(naps3, "register_scanner_profile") as register,
-            contextlib.redirect_stdout(output),
-        ):
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(naps3.os, "geteuid", return_value=0, create=True))
+            register = stack.enter_context(mock.patch.object(naps3, "register_scanner_profile"))
+            stack.enter_context(contextlib.redirect_stdout(output))
             result = naps3.run_registration_cli(
                 [
                     "--register-scanner",
@@ -133,16 +133,15 @@ class RegistrationCliTests(unittest.TestCase):
 
     def test_registration_cli_reports_open_gui_without_writing(self):
         output = io.StringIO()
-        with (
-            mock.patch.object(naps3.os, "geteuid", return_value=1000, create=True),
-            mock.patch.object(
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(naps3.os, "geteuid", return_value=1000, create=True))
+            stack.enter_context(mock.patch.object(
                 naps3,
                 "acquire_settings_lock",
                 side_effect=naps3.SettingsBusyError("NAPS3 открыт"),
-            ),
-            mock.patch.object(naps3, "register_scanner_profile") as register,
-            contextlib.redirect_stdout(output),
-        ):
+            ))
+            register = stack.enter_context(mock.patch.object(naps3, "register_scanner_profile"))
+            stack.enter_context(contextlib.redirect_stdout(output))
             result = naps3.run_registration_cli(
                 [
                     "--register-scanner",
