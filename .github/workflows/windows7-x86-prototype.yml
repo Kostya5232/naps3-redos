@@ -49,6 +49,7 @@ jobs:
           }
           # libpng 1.6.38's genchk template incorrectly finds checksym.awk in
           # the CMake build directory. gvsbuild copies patch files over sources.
+          New-Item -ItemType Directory -Path C:\gtk-build\github\gvsbuild\gvsbuild\patches\libpng\scripts -Force | Out-Null
           Copy-Item -Path windows\win7\patches\libpng\scripts\genchk.cmake.in -Destination C:\gtk-build\github\gvsbuild\gvsbuild\patches\libpng\scripts\genchk.cmake.in -Force
           python -m pip install 'pip<25' 'setuptools<70' wheel
           python -m pip install C:\gtk-build\github\gvsbuild
@@ -59,7 +60,7 @@ jobs:
           # setup-msys2 exports MSYSTEM=MINGW32. g-ir-scanner interprets this
           # as a request to use MinGW, while gvsbuild uses MSVC throughout.
           Remove-Item Env:MSYSTEM -ErrorAction SilentlyContinue
-          gvsbuild build --platform x86 --enable-gi --py-wheel gtk3 pygobject
+          gvsbuild build --platform x86 --enable-gi --py-wheel --patches-root-dir C:\gtk-build\github\gvsbuild\gvsbuild\patches gtk3 pygobject
 
       - name: Smoke test GTK on x86 Python
         shell: pwsh
