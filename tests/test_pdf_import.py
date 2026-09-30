@@ -3,6 +3,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -33,6 +34,19 @@ class PdfiumImportTests(unittest.TestCase):
                 file.unlink()
             with self.assertRaises(ValueError):
                 render_pdf_to_png(source, prefix, max_pages=1)
+            self.assertEqual(list(root.glob("page-*.png")), [])
+
+            save_image = Image.Image.save
+
+            def fail_second_page(image, output, *args, **kwargs):
+                if str(output).endswith("page-2.png"):
+                    Path(output).write_bytes(b"partial")
+                    raise OSError("simulated disk write error")
+                return save_image(image, output, *args, **kwargs)
+
+            with patch.object(Image.Image, "save", fail_second_page):
+                with self.assertRaisesRegex(OSError, "simulated disk write error"):
+                    render_pdf_to_png(source, prefix)
             self.assertEqual(list(root.glob("page-*.png")), [])
 
 

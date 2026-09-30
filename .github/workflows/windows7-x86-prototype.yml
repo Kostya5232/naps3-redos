@@ -58,6 +58,13 @@ jobs:
           $target = 'dependencies=["freetype", "gperf", "expat"],'
           if (-not $source.Contains($target)) { throw 'Unexpected fontconfig recipe' }
           [IO.File]::WriteAllText($recipe, $source.Replace($target, $target + "`n            patches=['gperf-windows.patch'],"))
+          New-Item -ItemType Directory -Path C:\gtk-build\github\gvsbuild\gvsbuild\patches\pixman\pc-files -Force | Out-Null
+          Copy-Item -Path windows\win7\patches\pixman\pc-files\pixman-1.pc -Destination C:\gtk-build\github\gvsbuild\gvsbuild\patches\pixman\pc-files\pixman-1.pc -Force
+          $recipe = 'C:\gtk-build\github\gvsbuild\gvsbuild\projects\pixman.py'
+          $source = [IO.File]::ReadAllText($recipe)
+          $target = 'self.install(r".\COPYING share\doc\pixman")'
+          if (-not $source.Contains($target)) { throw 'Unexpected pixman recipe' }
+          [IO.File]::WriteAllText($recipe, $source.Replace($target, "self.install_pc_files()`n        " + $target))
           python -m pip install 'pip<25' 'setuptools<70' wheel
           python -m pip install C:\gtk-build\github\gvsbuild
 
@@ -88,6 +95,8 @@ jobs:
           python -m unittest discover -v -s tests -p 'test_*.py'
           if ($LASTEXITCODE -ne 0) { throw 'Unit tests failed' }
           $exe = '.\dist\windows7-x86\NAPS3\NAPS3.exe'
+          python -c "import struct; p=open(r'$exe','rb').read(); o=struct.unpack_from('<I',p,0x3c)[0]; assert struct.unpack_from('<H',p,o+4)[0]==0x14c, 'NAPS3.exe is not x86'"
+          if ($LASTEXITCODE -ne 0) { throw 'Package architecture is not x86' }
           $process = Start-Process -FilePath $exe -ArgumentList '--self-test' -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw "Packaged self-test failed: $($process.ExitCode)" }
           python windows\check_gui_startup.py $exe

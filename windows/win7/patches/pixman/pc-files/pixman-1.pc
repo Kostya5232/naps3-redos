@@ -1,0 +1,11 @@
+# pixman 0.42.2 built by gvsbuild for the Windows 7 x86 toolchain.
+prefix=@prefix@
+exec_prefix=${prefix}
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: pixman-1
+Description: Pixel manipulation library
+Version: @version@
+Libs: -L${libdir} -lpixman-1
+Cflags: -I${includedir}/pixman-1

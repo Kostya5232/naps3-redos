@@ -33,7 +33,11 @@ def render_pdf_to_png(
                 image = page.render_topil(scale=dpi / 72)
                 try:
                     output = prefix.parent / f"{prefix.name}-{index + 1}.png"
-                    image.save(output, format="PNG")
+                    try:
+                        image.save(output, format="PNG")
+                    except Exception:
+                        output.unlink(missing_ok=True)
+                        raise
                     outputs.append(output)
                 finally:
                     image.close()
