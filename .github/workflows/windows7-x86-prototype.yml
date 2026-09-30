@@ -1,0 +1,63 @@
+name: Windows 7 x86 prototype
+
+on:
+  push:
+    branches:
+      - feature/windows7-x86-prototype
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gtk:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - name: Checkout NAPS3
+        uses: actions/checkout@v5
+
+      - name: Install Python 3.8 x86
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.8.10'
+          architecture: x86
+
+      - name: Install MSYS2 build tools
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW32
+          update: true
+          install: >-
+            git
+            make
+            patch
+
+      - name: Check Python 3.8 syntax
+        shell: pwsh
+        run: |
+          python -c "import struct,sys; assert sys.version_info[:2] == (3,8) and struct.calcsize('P') == 4"
+          python -m compileall -q naps3.py windows_backend.py windows
+
+      - name: Fetch pinned GTK build recipe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path C:\gtk-build\github -Force | Out-Null
+          git clone --depth 1 --branch 2022.6.0 https://github.com/wingtk/gvsbuild.git C:\gtk-build\github\gvsbuild
+          if ((git -C C:\gtk-build\github\gvsbuild rev-parse HEAD).Trim() -ne 'beeef2c42f35d8872412663589effc11851555c6') {
+            throw 'Unexpected gvsbuild commit'
+          }
+          python -m pip install 'pip<25' 'setuptools<70' wheel
+          python -m pip install C:\gtk-build\github\gvsbuild
+
+      - name: Build Windows 7 era GTK and PyGObject for x86
+        shell: pwsh
+        run: |
+          gvsbuild build --platform x86 --enable-gi --py-wheel gtk3 pygobject
+
+      - name: Smoke test GTK on x86 Python
+        shell: pwsh
+        run: |
+          $env:Path = 'C:\gtk-build\gtk\Win32\release\bin;' + $env:Path
+          $env:GI_TYPELIB_PATH = 'C:\gtk-build\gtk\Win32\release\lib\girepository-1.0'
+          python -c "import struct,gi; gi.require_version('Gtk','3.0'); from gi.repository import Gtk; assert struct.calcsize('P') == 4; print('GTK', Gtk.MAJOR_VERSION, Gtk.MINOR_VERSION)"
