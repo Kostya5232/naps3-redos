@@ -5,6 +5,7 @@ on:
     branches:
       - feature/windows7-x86-prototype
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -106,6 +107,32 @@ jobs:
         shell: pwsh
         run: .\windows\build_installer.ps1 -ApplicationDirectory .\dist\windows7-x86\NAPS3 -OutputDirectory .\dist\windows7-x86\release -Architecture x86
 
+      - name: Install and smoke test x86 package
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem .\dist\windows7-x86\release -Filter 'NAPS3-*-Windows-x86.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'x86 installer is missing' }
+          $install = Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "x86 installer failed: $($install.ExitCode)" }
+          $exe = Join-Path $env:LOCALAPPDATA 'Programs\NAPS3\NAPS3.exe'
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "Installed application is missing: $exe" }
+          $test = Start-Process -FilePath $exe -ArgumentList '--self-test' -Wait -PassThru
+          if ($test.ExitCode -ne 0) { throw "Installed x86 self-test failed: $($test.ExitCode)" }
+
+      - name: Create stable x86 installer link
+        if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+        shell: pwsh
+        run: |
+          $release = Resolve-Path .\dist\windows7-x86\release
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          Copy-Item -LiteralPath "$release\NAPS3-$version-Windows-x86.exe" -Destination "$release\NAPS3-latest-Windows-x86.exe"
+          $files = Get-ChildItem -LiteralPath $release -File | Where-Object Name -Match '\.(exe|zip)$'
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          [IO.File]::WriteAllLines("$release\SHA256SUMS.windows7-x86", $lines, [Text.UTF8Encoding]::new($false))
+
       - name: Upload Windows 7 test package
         uses: actions/upload-artifact@v6
         with:
@@ -113,6 +140,6 @@ jobs:
           path: |
             dist/windows7-x86/release/*.exe
             dist/windows7-x86/release/*.zip
-            dist/windows7-x86/release/SHA256SUMS.windows
+            dist/windows7-x86/release/SHA256SUMS.windows7-x86
           if-no-files-found: error
           retention-days: 14

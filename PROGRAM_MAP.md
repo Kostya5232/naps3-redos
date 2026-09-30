@@ -97,9 +97,9 @@ flowchart TD
 ```mermaid
 flowchart LR
     MainBranch["Ветка main"] --> Checks["checks.yml · тесты"]
-    Tag["Тег v0.9.5"] --> Release["release.yml"]
-    Release --> Tests["Linux + Windows тесты"]
-    Tests --> Build["RPM + Windows EXE/ZIP"]
+    Tag["Будущий тег v0.9.6"] --> Release["release.yml"]
+    Release --> Tests["Linux + Windows x64 + Win7 x86 тесты"]
+    Tests --> Build["RPM + два Windows EXE/ZIP"]
     Build --> Assets["GitHub Release · пакеты + SHA-256"]
     Assets --> Dispatch["repository_dispatch"]
     Dispatch --> Pages["pages.yml · createrepo_c"]

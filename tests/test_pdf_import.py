@@ -14,8 +14,9 @@ from pdf_import import pdfium_available, render_pdf_to_png
 class PdfiumImportTests(unittest.TestCase):
     def test_renders_each_pdf_page_without_leaving_partial_files(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / "two-pages.pdf"
+            root = Path(directory) / "Документы"
+            root.mkdir()
+            source = root / "пример.pdf"
             first = Image.new("RGB", (100, 100), "red")
             second = Image.new("RGB", (100, 100), "blue")
             first.save(source, format="PDF", save_all=True, append_images=[second])

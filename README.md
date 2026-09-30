@@ -4,15 +4,16 @@ GTK-приложение для сканирования документов ч
 стекло, автоподатчик, ручной и аппаратный дуплекс, импорт страниц и сохранение
 в PDF, TIFF, PNG, JPEG, BMP и WebP.
 
-Текущая версия исходного кода — **0.9.4** для **РЕД ОС 8 x86_64** и **Windows 10/11 x64**.
+Текущая версия исходного кода — **0.9.6**, кандидат для **РЕД ОС 8 x86_64**, **Windows 10/11 x64** и **Windows 7 x86/x64**. Стабильный выпуск на GitHub пока остаётся 0.9.5.
 Интерфейс, работа со страницами и защищённое сохранение общие для обеих ОС.
-В РЕД ОС используются SANE/eSCL, в Windows — установленный системный драйвер WIA.
+В РЕД ОС используются SANE/eSCL, в Windows — установленный системный драйвер WIA или TWAIN.
 
 ## Windows
 
 Скачайте установщик из последнего выпуска и запустите его:
 
 - [NAPS3-latest-Windows-x64.exe](https://github.com/Kostya5232/naps3-redos/releases/latest/download/NAPS3-latest-Windows-x64.exe)
+- [NAPS3-latest-Windows-x86.exe](https://github.com/Kostya5232/naps3-redos/releases/latest/download/NAPS3-latest-Windows-x86.exe) — один установщик для Windows 7 x86 и x64 после выпуска 0.9.6
 - [все файлы выпуска и контрольные суммы](https://github.com/Kostya5232/naps3-redos/releases/latest)
 
 Установка выполняется для текущего пользователя и не требует покупки лицензии
@@ -50,6 +51,20 @@ sudo dnf --refresh upgrade -y naps3
 
 Репозиторий пока публикуется без RPM-подписи (`gpgcheck=0`). Пакеты и метаданные
 передаются по HTTPS, а GitHub Release дополнительно содержит SHA-256.
+
+## Что изменилось в 0.9.6 (кандидат)
+
+- Подготовлен один 32-битный пакет для Windows 7 x86 и x64 с Python 3.8 и GTK 3;
+- импорт PDF в этом пакете работает через PDFium, остальные сборки сохраняют `pdftoppm`;
+- WIA/TWAIN-помощники работают без PowerShell-скриптов; установщик проверяет наличие KB2533623;
+- для сканирования через WIA/TWAIN нужен .NET Framework 4 и драйвер устройства;
+- совместимость на двух Windows 7 ожидает аппаратной проверки.
+
+## Что изменилось в 0.9.5
+
+- Добавлено отдельное TWAIN-подключение для Windows, если WIA-драйвер возвращает ошибку;
+- на Kyocera ECOSYS MA4000x по USB проверены стекло и автоподатчик через TWAIN;
+- TWAIN-сканирование изолировано в 32-битном процессе и ограничено по времени и числу страниц.
 
 ## Что изменилось в 0.9.4
 
@@ -168,15 +183,18 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 ./build_rpm.sh
 ```
 
-Windows собирается в окружении MSYS2 UCRT64:
+Windows 10/11 x64 собирается в окружении MSYS2 UCRT64:
 
 ```bash
 ./windows/build_windows.sh
 powershell.exe -File windows/build_installer.ps1
 ```
 
-Теги вида `v0.9.4` запускают GitHub Actions: тесты, сборку RPM, сборку Windows EXE
-и ZIP, создание общего выпуска и обновление DNF-репозитория на GitHub Pages.
+Кандидат Windows 7 x86/x64 собирается в GitHub Actions через
+[отдельный сценарий](.github/workflows/windows7-x86-prototype.yml) на Python 3.8 x86.
+
+Теги вида `v0.9.6` запускают GitHub Actions: тесты, сборку RPM, двух Windows-пакетов,
+создание общего выпуска и обновление DNF-репозитория на GitHub Pages.
 
 ## Лицензии
 

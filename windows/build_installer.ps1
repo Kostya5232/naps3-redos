@@ -12,6 +12,8 @@ if ([string]::IsNullOrWhiteSpace($ApplicationDirectory)) {
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $root "dist\windows\release"
 }
+$ApplicationDirectory = [IO.Path]::GetFullPath($ApplicationDirectory)
+$OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 
 $source = Get-Content -LiteralPath (Join-Path $root "naps3.py") -Raw
 $match = [regex]::Match($source, '(?m)^APP_VERSION = "([^"]+)"')
@@ -41,7 +43,8 @@ $makensis = $makensisCandidates[0]
 $null = New-Item -ItemType Directory -Path $OutputDirectory -Force
 $installer = Join-Path $OutputDirectory "NAPS3-$version-Windows-$Architecture.exe"
 $portable = Join-Path $OutputDirectory "NAPS3-$version-Windows-$Architecture-portable.zip"
-$checksums = Join-Path $OutputDirectory "SHA256SUMS.windows"
+$checksumName = if ($Architecture -eq "x86") { "SHA256SUMS.windows7-x86" } else { "SHA256SUMS.windows" }
+$checksums = Join-Path $OutputDirectory $checksumName
 
 Remove-Item -LiteralPath $installer, $portable, $checksums -Force -ErrorAction SilentlyContinue
 
