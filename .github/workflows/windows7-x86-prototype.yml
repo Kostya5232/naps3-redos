@@ -37,7 +37,7 @@ jobs:
         shell: pwsh
         run: |
           python -c "import struct,sys; assert sys.version_info[:2] == (3,8) and struct.calcsize('P') == 4"
-          python -m compileall -q naps3.py windows_backend.py windows
+          python -m compileall -q naps3.py pdf_import.py windows_backend.py windows tests/test_pdf_import.py
 
       - name: Fetch pinned GTK build recipe
         shell: pwsh
@@ -47,6 +47,9 @@ jobs:
           if ((git -C C:\gtk-build\github\gvsbuild rev-parse HEAD).Trim() -ne 'beeef2c42f35d8872412663589effc11851555c6') {
             throw 'Unexpected gvsbuild commit'
           }
+          # libpng 1.6.38's genchk template incorrectly finds checksym.awk in
+          # the CMake build directory. gvsbuild copies patch files over sources.
+          Copy-Item -Path windows\win7\patches\libpng\scripts\genchk.cmake.in -Destination C:\gtk-build\github\gvsbuild\gvsbuild\patches\libpng\scripts\genchk.cmake.in -Force
           python -m pip install 'pip<25' 'setuptools<70' wheel
           python -m pip install C:\gtk-build\github\gvsbuild
 

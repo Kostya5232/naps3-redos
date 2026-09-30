@@ -6902,11 +6902,14 @@ class MainWindow(Gtk.ApplicationWindow):
             return
 
         pdf_converter = find_runtime_executable("pdftoppm")
-        if pdf_converter is None:
+        from pdf_import import pdfium_available, render_pdf_to_png
+
+        use_pdfium = IS_WINDOWS and pdf_converter is None and pdfium_available()
+        if pdf_converter is None and not use_pdfium:
             self.show_error(
                 "Импорт PDF недоступен",
                 (
-                    "Переустановите NAPS3 для Windows: в пакете отсутствует pdftoppm."
+                    "Переустановите NAPS3 для Windows: в пакете отсутствует компонент импорта PDF."
                     if IS_WINDOWS
                     else "Не установлен компонент pdftoppm. Установите пакет poppler-utils."
                 ),
@@ -6951,30 +6954,34 @@ class MainWindow(Gtk.ApplicationWindow):
 
         def worker() -> None:
             try:
-                result = subprocess.run(
-                    [
-                        pdf_converter,
-                        "-png",
-                        "-r",
-                        "160",
-                        filename,
-                        str(prefix),
-                    ],
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    timeout=300,
-                    check=False,
-                    env=converter_env,
-                )
-                files = sorted(import_dir.glob("page-*.png"))
+                if use_pdfium:
+                    files = render_pdf_to_png(Path(filename), prefix)
+                    details = ""
+                else:
+                    result = subprocess.run(
+                        [
+                            pdf_converter,
+                            "-png",
+                            "-r",
+                            "160",
+                            filename,
+                            str(prefix),
+                        ],
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        timeout=300,
+                        check=False,
+                        env=converter_env,
+                    )
+                    files = sorted(import_dir.glob("page-*.png"))
+                    details = compact_details(result.stderr)
                 if not files:
                     raise Naps3Error(
                         "PDF не удалось преобразовать в изображения.\n\n"
-                        f"Технические сведения: "
-                        f"{compact_details(result.stderr)}"
+                        f"Технические сведения: {details}"
                     )
                 GLib.idle_add(self._import_pdf_ready, files, "")
             except Exception as exc:  # noqa: BLE001
@@ -7617,7 +7624,10 @@ def check_runtime(*, strict_windows: bool = False) -> Optional[str]:
         except WindowsBackendError as exc:
             missing.append(f"компонент Windows WIA ({exc})")
         if find_runtime_executable("pdftoppm") is None:
-            missing.append("pdftoppm для импорта PDF")
+            from pdf_import import pdfium_available
+
+            if not pdfium_available():
+                missing.append("компонент импорта PDF")
     elif shutil.which("scanimage") is None:
         missing.append("scanimage из пакета sane-backends")
 
