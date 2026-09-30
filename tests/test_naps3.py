@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import socket
 import struct
 import subprocess
@@ -32,7 +33,9 @@ class RuntimeCheckTests(unittest.TestCase):
             naps3,
             "run_wia_bridge",
             side_effect=naps3.WindowsBackendError("WIA-мост недоступен"),
-        ), mock.patch.object(naps3, "find_runtime_executable", return_value=None):
+        ), mock.patch.object(naps3, "find_runtime_executable", return_value=None), mock.patch(
+            "pdf_import.pdfium_available", return_value=False
+        ):
             error = naps3.check_runtime(strict_windows=True)
 
         self.assertIsNotNone(error)
@@ -483,6 +486,24 @@ class ExportHarness:
 
 
 class ExportTests(unittest.TestCase):
+    def assert_pdf_pages(self, output: Path, expected: int) -> None:
+        pdfinfo = shutil.which("pdfinfo")
+        if pdfinfo:
+            metadata = subprocess.run(
+                [pdfinfo, str(output)], check=True, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            ).stdout
+            self.assertRegex(metadata, rf"(?m)^Pages:\s+{expected}$")
+            return
+
+        from pypdfium2._helpers import PdfDocument
+
+        document = PdfDocument(str(output))
+        try:
+            self.assertEqual(len(document), expected)
+        finally:
+            document.close()
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.directory = Path(self.temporary.name)
@@ -504,11 +525,7 @@ class ExportTests(unittest.TestCase):
         })
         self.assertEqual(result["path"], output)
         self.assertTrue(output.read_bytes().startswith(b"%PDF-"))
-        metadata = subprocess.run(
-            ["pdfinfo", str(output)], check=True, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        ).stdout
-        self.assertRegex(metadata, r"(?m)^Pages:\s+3$")
+        self.assert_pdf_pages(output, 3)
 
     def test_exports_multipage_tiff(self) -> None:
         output = self.directory / "result.tiff"
@@ -530,11 +547,7 @@ class ExportTests(unittest.TestCase):
                 self.assertGreater(output.stat().st_size, 0)
                 if file_format == "PDF":
                     self.assertTrue(output.read_bytes().startswith(b"%PDF-"))
-                    metadata = subprocess.run(
-                        ["pdfinfo", str(output)], check=True, text=True,
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    ).stdout
-                    self.assertRegex(metadata, r"(?m)^Pages:\s+1$")
+                    self.assert_pdf_pages(output, 1)
                 else:
                     with Image.open(output) as exported:
                         exported.verify()
@@ -563,11 +576,7 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(len(outputs), 3)
         for output in outputs:
             self.assertTrue(output.read_bytes().startswith(b"%PDF-"))
-            metadata = subprocess.run(
-                ["pdfinfo", str(output)], check=True, text=True,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            ).stdout
-            self.assertRegex(metadata, r"(?m)^Pages:\s+1$")
+            self.assert_pdf_pages(output, 1)
 
     def test_pdf_is_default_export_format(self) -> None:
         self.assertEqual(naps3.DEFAULT_EXPORT_FORMAT, "PDF")

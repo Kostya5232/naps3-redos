@@ -47,6 +47,7 @@ if gtk_prefix_path:
     if not gtk_bin.is_dir() or not gtk_typelibs.is_dir():
         raise FileNotFoundError("GTK x86 runtime is incomplete")
     binaries.extend((str(dll), ".") for dll in gtk_bin.glob("*.dll"))
+    datas.append((str(root / "README.txt"), "."))
     datas.append((str(gtk_typelibs), "lib/girepository-1.0"))
     for source, destination in (
         (gtk_prefix / "etc" / "fonts", "etc/fonts"),

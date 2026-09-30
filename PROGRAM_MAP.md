@@ -218,6 +218,7 @@ GTK обслуживает окно в главном потоке. Поиск �
 | sane-backends / `scanimage` | Обнаружение и сканирование через системные backend. |
 | Windows Image Acquisition | Системный интерфейс сканера в Windows; используется драйвер производителя МФУ. |
 | Windows Image Acquisition Automation + .NET Framework 4 | Нативный WIA-помощник без выполнения PowerShell-скриптов. |
+| Windows 7 + KB2533623 | Системное обновление, требуемое встроенному Python 3.8 в экспериментальной x86-сборке. |
 | Python `socket` и DNS-SD/mDNS | Автоматическое обнаружение eSCL-сканеров в локальной сети Windows без внешней библиотеки. |
 | sane-airscan | Доступ SANE к eSCL-сканерам в сети и через локальный ipp-usb. |
 | ipp-usb и поставляемый `ipp-usb-naps3` | Преобразование USB-подключения в локальный HTTP/eSCL. |

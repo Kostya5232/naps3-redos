@@ -45,7 +45,17 @@ $checksums = Join-Path $OutputDirectory "SHA256SUMS.windows"
 
 Remove-Item -LiteralPath $installer, $portable, $checksums -Force -ErrorAction SilentlyContinue
 
-& $makensis "/INPUTCHARSET" "UTF8" "/DAPP_VERSION=$version" "/DAPP_FILE_VERSION=$fileVersion" "/DSOURCE_DIR=$ApplicationDirectory" "/DOUTPUT_FILE=$installer" (Join-Path $PSScriptRoot "installer.nsi")
+$defines = @(
+    "/INPUTCHARSET", "UTF8",
+    "/DAPP_VERSION=$version",
+    "/DAPP_FILE_VERSION=$fileVersion",
+    "/DSOURCE_DIR=$ApplicationDirectory",
+    "/DOUTPUT_FILE=$installer"
+)
+if ($Architecture -eq "x86") {
+    $defines += "/DWIN7_X86=1"
+}
+& $makensis @defines (Join-Path $PSScriptRoot "installer.nsi")
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $installer -PathType Leaf)) {
     throw "NSIS не создал установщик."
 }
