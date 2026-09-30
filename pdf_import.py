@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 
 def pdfium_available() -> bool:
-    return importlib.util.find_spec("pypdfium2") is not None
+    try:
+        from pypdfium2._helpers import PdfDocument  # noqa: F401
+    except (ImportError, OSError):
+        return False
+    return True
 
 
 def render_pdf_to_png(

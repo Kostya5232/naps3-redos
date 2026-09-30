@@ -2,6 +2,11 @@
 """
 NAPS3 — графическое сканирование документов для РЕД ОС и Windows.
 
+Версия 0.9.6 (кандидат):
+- отдельная 32-битная сборка для Windows 7 x86/x64 на Python 3.8 и GTK 3;
+- резервный импорт PDF через PDFium для этой сборки;
+- стабильный выпуск ожидает проверки на обеих версиях Windows 7.
+
 Версия 0.9.5:
 - добавлено отдельное TWAIN-подключение Windows для сканеров с неисправным WIA;
 - подтверждено сканирование Kyocera ECOSYS MA4000x по USB со стекла и АПД;
@@ -7627,7 +7632,7 @@ def check_runtime(*, strict_windows: bool = False) -> Optional[str]:
             from pdf_import import pdfium_available
 
             if not pdfium_available():
-                missing.append("компонент импорта PDF")
+                missing.append("pdftoppm или PDFium для импорта PDF")
     elif shutil.which("scanimage") is None:
         missing.append("scanimage из пакета sane-backends")
 

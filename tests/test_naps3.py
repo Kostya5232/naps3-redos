@@ -40,6 +40,14 @@ class RuntimeCheckTests(unittest.TestCase):
         self.assertIn("WIA-мост недоступен", error)
         self.assertIn("pdftoppm", error)
 
+    def test_windows_self_test_accepts_pdfium_without_pdftoppm(self) -> None:
+        with mock.patch.object(naps3, "IS_WINDOWS", True), mock.patch.object(
+            naps3, "run_wia_bridge", return_value={"ok": True}
+        ), mock.patch.object(
+            naps3, "find_runtime_executable", return_value=None
+        ), mock.patch("pdf_import.pdfium_available", return_value=True):
+            self.assertIsNone(naps3.check_runtime(strict_windows=True))
+
 
 class EsclParsingTests(unittest.TestCase):
     def test_manual_duplex_reverses_backs_and_interleaves(self) -> None:
