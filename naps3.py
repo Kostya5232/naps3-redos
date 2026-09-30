@@ -178,7 +178,7 @@ except ImportError as exc:
 
 APP_ID = "ru.redos.NAPS3"
 APP_NAME = "NAPS3"
-APP_VERSION = "0.9.5"
+APP_VERSION = "0.9.6"
 DEFAULT_MATCH = ""
 DEFAULT_SCANNER_NAME = "Сканер Windows" if IS_WINDOWS else "Сканер"
 DEFAULT_ESCL_URL = "http://127.0.0.1:60000/eSCL"

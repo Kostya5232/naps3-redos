@@ -1,6 +1,7 @@
 param(
     [string]$ApplicationDirectory = "",
-    [string]$OutputDirectory = ""
+    [string]$OutputDirectory = "",
+    [ValidateSet("x64", "x86")][string]$Architecture = "x64"
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,7 +19,10 @@ if (-not $match.Success) {
     throw "Не удалось определить версию NAPS3."
 }
 $version = $match.Groups[1].Value
-$fileVersion = "$version.0.0"
+if ($version -notmatch '^\d+\.\d+\.\d+$') {
+    throw "Версия должна состоять из трёх чисел: $version"
+}
+$fileVersion = "$version.0"
 
 if (-not (Test-Path -LiteralPath (Join-Path $ApplicationDirectory "NAPS3.exe") -PathType Leaf)) {
     throw "Не найдена собранная программа: $ApplicationDirectory"
@@ -35,8 +39,8 @@ if ($makensisCandidates.Count -eq 0) {
 $makensis = $makensisCandidates[0]
 
 $null = New-Item -ItemType Directory -Path $OutputDirectory -Force
-$installer = Join-Path $OutputDirectory "NAPS3-$version-Windows-x64.exe"
-$portable = Join-Path $OutputDirectory "NAPS3-$version-Windows-x64-portable.zip"
+$installer = Join-Path $OutputDirectory "NAPS3-$version-Windows-$Architecture.exe"
+$portable = Join-Path $OutputDirectory "NAPS3-$version-Windows-$Architecture-portable.zip"
 $checksums = Join-Path $OutputDirectory "SHA256SUMS.windows"
 
 Remove-Item -LiteralPath $installer, $portable, $checksums -Force -ErrorAction SilentlyContinue

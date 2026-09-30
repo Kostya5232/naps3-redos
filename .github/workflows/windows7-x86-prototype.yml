@@ -51,6 +51,13 @@ jobs:
           # the CMake build directory. gvsbuild copies patch files over sources.
           New-Item -ItemType Directory -Path C:\gtk-build\github\gvsbuild\gvsbuild\patches\libpng\scripts -Force | Out-Null
           Copy-Item -Path windows\win7\patches\libpng\scripts\genchk.cmake.in -Destination C:\gtk-build\github\gvsbuild\gvsbuild\patches\libpng\scripts\genchk.cmake.in -Force
+          New-Item -ItemType Directory -Path C:\gtk-build\github\gvsbuild\gvsbuild\patches\fontconfig -Force | Out-Null
+          Copy-Item -Path windows\win7\patches\fontconfig\gperf-windows.patch -Destination C:\gtk-build\github\gvsbuild\gvsbuild\patches\fontconfig\gperf-windows.patch -Force
+          $recipe = 'C:\gtk-build\github\gvsbuild\gvsbuild\projects\fontconfig.py'
+          $source = [IO.File]::ReadAllText($recipe)
+          $target = 'dependencies=["freetype", "gperf", "expat"],'
+          if (-not $source.Contains($target)) { throw 'Unexpected fontconfig recipe' }
+          [IO.File]::WriteAllText($recipe, $source.Replace($target, $target + "`n            patches=['gperf-windows.patch'],"))
           python -m pip install 'pip<25' 'setuptools<70' wheel
           python -m pip install C:\gtk-build\github\gvsbuild
 
@@ -68,3 +75,35 @@ jobs:
           $env:Path = 'C:\gtk-build\gtk\Win32\release\bin;' + $env:Path
           $env:GI_TYPELIB_PATH = 'C:\gtk-build\gtk\Win32\release\lib\girepository-1.0'
           python -c "import struct,gi; gi.require_version('Gtk','3.0'); from gi.repository import Gtk; assert struct.calcsize('P') == 4; print('GTK', Gtk.MAJOR_VERSION, Gtk.MINOR_VERSION)"
+
+      - name: Build single x86 application for Windows 7 x86 and x64
+        shell: pwsh
+        run: .\windows\win7\build_x86.ps1
+
+      - name: Test application and Windows bridges
+        shell: pwsh
+        run: |
+          $env:Path = 'C:\gtk-build\gtk\Win32\release\bin;' + $env:Path
+          $env:GI_TYPELIB_PATH = 'C:\gtk-build\gtk\Win32\release\lib\girepository-1.0'
+          python -m unittest discover -v -s tests -p 'test_*.py'
+          if ($LASTEXITCODE -ne 0) { throw 'Unit tests failed' }
+          $exe = '.\dist\windows7-x86\NAPS3\NAPS3.exe'
+          $process = Start-Process -FilePath $exe -ArgumentList '--self-test' -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Packaged self-test failed: $($process.ExitCode)" }
+          python windows\check_gui_startup.py $exe
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged GUI did not open' }
+
+      - name: Create x86 installer and portable ZIP
+        shell: pwsh
+        run: .\windows\build_installer.ps1 -ApplicationDirectory .\dist\windows7-x86\NAPS3 -OutputDirectory .\dist\windows7-x86\release -Architecture x86
+
+      - name: Upload Windows 7 test package
+        uses: actions/upload-artifact@v6
+        with:
+          name: naps3-windows7-x86-candidate
+          path: |
+            dist/windows7-x86/release/*.exe
+            dist/windows7-x86/release/*.zip
+            dist/windows7-x86/release/SHA256SUMS.windows
+          if-no-files-found: error
+          retention-days: 14

@@ -11,6 +11,18 @@ import time
 import traceback
 
 
+_bundle_dir = getattr(sys, "_MEIPASS", None)
+if _bundle_dir:
+    _bundle_root = Path(_bundle_dir)
+    for variable, relative_path in (
+        ("GI_TYPELIB_PATH", "lib/girepository-1.0"),
+        ("GSETTINGS_SCHEMA_DIR", "share/glib-2.0/schemas"),
+    ):
+        bundled = _bundle_root / relative_path
+        if bundled.is_dir():
+            os.environ[variable] = str(bundled)
+
+
 def _open_startup_log():
     local_app_data = os.environ.get("LOCALAPPDATA")
     if local_app_data:
