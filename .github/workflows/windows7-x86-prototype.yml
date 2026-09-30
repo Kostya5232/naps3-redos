@@ -53,6 +53,9 @@ jobs:
       - name: Build Windows 7 era GTK and PyGObject for x86
         shell: pwsh
         run: |
+          # setup-msys2 exports MSYSTEM=MINGW32. g-ir-scanner interprets this
+          # as a request to use MinGW, while gvsbuild uses MSVC throughout.
+          Remove-Item Env:MSYSTEM -ErrorAction SilentlyContinue
           gvsbuild build --platform x86 --enable-gi --py-wheel gtk3 pygobject
 
       - name: Smoke test GTK on x86 Python
