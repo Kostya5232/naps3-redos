@@ -56,6 +56,16 @@ jobs:
           $newUrl = 'https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/{version}/libjpeg-turbo-{version}.tar.gz'
           if (-not $source.Contains($oldUrl)) { throw 'Unexpected libjpeg-turbo recipe' }
           [IO.File]::WriteAllText($recipe, $source.Replace($oldUrl, $newUrl))
+          # The libpng SourceForge mirror now returns HTTP 522. Build the same
+          # official v1.6.38 tag from GitHub with its separately pinned hash.
+          $recipe = 'C:\gtk-build\github\gvsbuild\gvsbuild\projects\libpng.py'
+          $source = [IO.File]::ReadAllText($recipe)
+          $oldUrl = 'http://prdownloads.sourceforge.net/libpng/libpng-{version}.tar.xz'
+          $newUrl = 'https://github.com/pnggroup/libpng/archive/refs/tags/v{version}.tar.gz'
+          $oldHash = 'b3683e8b8111ebf6f1ac004ebb6b0c975cd310ec469d98364388e9cedbfa68be'
+          $newHash = 'd4160037fa5d09fa7cff555037f2a7f2fefc99ca01e21723b19bfcda33015234'
+          if (-not $source.Contains($oldUrl) -or -not $source.Contains($oldHash)) { throw 'Unexpected libpng recipe' }
+          [IO.File]::WriteAllText($recipe, $source.Replace($oldUrl, $newUrl).Replace($oldHash, $newHash))
           # libpng 1.6.38's genchk template incorrectly finds checksym.awk in
           # the CMake build directory. gvsbuild copies patch files over sources.
           New-Item -ItemType Directory -Path C:\gtk-build\github\gvsbuild\gvsbuild\patches\libpng\scripts -Force | Out-Null
