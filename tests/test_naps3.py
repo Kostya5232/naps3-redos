@@ -815,7 +815,13 @@ class TwainProgressTests(unittest.TestCase):
             scan_dir = Path(directory)
             cleanup_started = threading.Event()
             cleanup_released = threading.Event()
+            cleanup_finished = threading.Event()
             result_ready = threading.Event()
+
+            def finish_cleanup(*_args) -> None:
+                cleanup_started.set()
+                cleanup_released.wait(4)
+                cleanup_finished.set()
 
             class FakeProcess:
                 returncode = None
@@ -843,9 +849,7 @@ class TwainProgressTests(unittest.TestCase):
                 _convert_stream_document=lambda *args: naps3.MainWindow._convert_stream_document(
                     owner, *args
                 ),
-                _finish_twain_cleanup=lambda *_args: (
-                    cleanup_started.set(), cleanup_released.wait(4)
-                ),
+                _finish_twain_cleanup=finish_cleanup,
             )
             result: dict[str, object] = {}
 
@@ -891,6 +895,7 @@ class TwainProgressTests(unittest.TestCase):
                 finally:
                     cleanup_released.set()
                     worker.join(timeout=4)
+                    self.assertTrue(cleanup_finished.wait(4))
 
             self.assertNotIn("error", result)
             files, error, _profile = result["value"]
