@@ -786,5 +786,120 @@ class CancellationTests(unittest.TestCase):
             self.assertIsNone(owner.current_process)
 
 
+class TwainProgressTests(unittest.TestCase):
+    def test_cancel_keeps_complete_page_even_if_preview_callback_is_pending(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scan_dir = Path(directory)
+            page = scan_dir / "page-0001.png"
+            with Image.new("RGB", (8, 8), "white") as image:
+                image.save(page)
+            owner = SimpleNamespace(
+                pages=[],
+                cancel_requested=True,
+                _scan_streaming_enabled=True,
+                _scan_streamed_pages=0,
+                active_scan_dir=scan_dir,
+                current_process=None,
+                current_escl_job_url=None,
+                current_escl_response=None,
+                set_busy=mock.Mock(),
+                add_pages=lambda paths: owner.pages.extend(
+                    naps3.Page(path=path, label=path.name) for path in paths
+                ),
+                set_status=mock.Mock(),
+                show_error=mock.Mock(),
+            )
+            naps3.MainWindow._scan_ready(owner, [], "cancelled", {})
+            self.assertEqual([item.path for item in owner.pages], [page])
+            owner.show_error.assert_not_called()
+
+    def test_scan_completion_does_not_add_streamed_page_twice(self) -> None:
+        first = Path("page-0001.png")
+        second = Path("page-0002.png")
+        owner = SimpleNamespace(
+            pages=[naps3.Page(path=first, label=first.name)],
+            cancel_requested=False,
+            current_process=None,
+            current_escl_job_url=None,
+            current_escl_response=None,
+            active_scan_dir=Path("scan"),
+            set_busy=mock.Mock(),
+            add_pages=mock.Mock(),
+            set_status=mock.Mock(),
+        )
+        naps3.MainWindow._scan_ready(owner, [first, second], "", {})
+        owner.add_pages.assert_called_once_with([second])
+        self.assertIsNone(owner.active_scan_dir)
+
+    def test_complete_page_is_published_before_driver_exits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scan_dir = Path(directory)
+            shown = threading.Event()
+            released = threading.Event()
+
+            class FakeProcess:
+                returncode = None
+
+                def poll(self):
+                    return 0 if released.is_set() else None
+
+                def communicate(self):
+                    released.wait(4)
+                    self.returncode = 0
+                    return '{"pages":1}', ""
+
+                def kill(self):
+                    released.set()
+
+            process = FakeProcess()
+            owner = SimpleNamespace(
+                current_process=None,
+                cancel_requested=False,
+                _set_device_profile=mock.Mock(),
+                set_status=mock.Mock(),
+                _scan_page_ready=lambda *_args: shown.set(),
+                _convert_stream_document=lambda *args: naps3.MainWindow._convert_stream_document(
+                    owner, *args
+                ),
+            )
+            result: dict[str, object] = {}
+
+            def run_scan() -> None:
+                try:
+                    result["value"] = naps3.MainWindow._scan_windows_wia(
+                        owner, scan_dir,
+                        {"name": "Kyocera", "device_id": "ECOSYS MA4000x (USB)"},
+                        "ADF", "Color", 300, "A4", backend="twain",
+                    )
+                except BaseException as exc:
+                    result["error"] = exc
+
+            with mock.patch.object(
+                naps3, "build_twain_scan_command", return_value=["fake-bridge"]
+            ), mock.patch.object(
+                naps3.subprocess, "Popen", return_value=process
+            ), mock.patch.object(
+                naps3.GLib, "idle_add", side_effect=lambda callback, *args: callback(*args)
+            ):
+                worker = threading.Thread(target=run_scan, daemon=True)
+                worker.start()
+                partial = scan_dir / "raw-0001.bmp.part"
+                with Image.new("RGB", (20, 20), "white") as image:
+                    image.save(partial, format="BMP")
+                partial.replace(scan_dir / "raw-0001.bmp")
+                try:
+                    self.assertTrue(shown.wait(4), "the page must appear before TWAIN exits")
+                    self.assertFalse(released.is_set())
+                finally:
+                    released.set()
+                    worker.join(timeout=4)
+
+            self.assertFalse(worker.is_alive())
+            self.assertNotIn("error", result)
+            files, error, _profile = result["value"]
+            self.assertEqual(error, "")
+            self.assertEqual([path.name for path in files], ["page-0001.png"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

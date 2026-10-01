@@ -51,6 +51,13 @@ def main() -> int:
         window.cancel_button.hide()
         drain_events()
 
+        method_dialog = naps3.USBConnectionMethodDialog(window, "twain")
+        assert method_dialog.get_backend() == "twain"
+        method_dialog.methods["wia"].set_active(True)
+        assert method_dialog.get_backend() == "wia"
+        method_dialog.destroy()
+        drain_events()
+
         first = root / "first.png"
         second = root / "second.png"
         with Image.new("RGB", (120, 180), "white") as image:
