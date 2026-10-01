@@ -6,6 +6,7 @@ NAPS3 — графическое сканирование документов �
 - отдельная 32-битная сборка для Windows 7 x86/x64 на Python 3.8 и GTK 3;
 - резервный импорт PDF через PDFium для этой сборки;
 - TWAIN-страницы показываются по мере получения; выбор USB-драйвера вынесен в окно подключения;
+- одиночная страница со стекла доступна до завершения медленного закрытия TWAIN-драйвера;
 - стабильный выпуск ожидает проверки на обеих версиях Windows 7.
 
 Версия 0.9.5:
@@ -3179,6 +3180,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self.active_scan_dir: Optional[Path] = None
         self._scan_streamed_pages = 0
         self._scan_streaming_enabled = False
+        self._twain_cleanup_pending = False
+        self._twain_cleanup_process: Optional[subprocess.Popen] = None
         self._profile_probe_token: Optional[object] = None
         self.scan_sequence = 0
         self._preview_failures: set[Path] = set()
@@ -4818,7 +4821,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.set_status(status)
 
     def refresh_device(self) -> None:
-        if self.is_busy:
+        if self.is_busy or getattr(self, "_twain_cleanup_pending", False):
             return
 
         self.set_busy(True, "Поиск USB-сканера…")
@@ -4880,7 +4883,7 @@ class MainWindow(Gtk.ApplicationWindow):
         return False
 
     def connect_usb_scanner(self) -> None:
-        if self.is_busy:
+        if self.is_busy or getattr(self, "_twain_cleanup_pending", False):
             return
         backend_choice = "auto"
         if IS_WINDOWS:
@@ -5074,7 +5077,7 @@ class MainWindow(Gtk.ApplicationWindow):
         return False
 
     def connect_network_scanner(self) -> None:
-        if self.is_busy:
+        if self.is_busy or getattr(self, "_twain_cleanup_pending", False):
             return
         self.set_busy(True, "Поиск сетевых eSCL-сканеров…")
         self._set_device_status(
@@ -5174,6 +5177,9 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def start_scan(self) -> None:
         if self.is_busy:
+            return
+        if getattr(self, "_twain_cleanup_pending", False):
+            self.set_status("Страница готова; TWAIN ещё освобождает сканер…")
             return
 
         if not IS_WINDOWS and shutil.which("scanimage") is None:
@@ -5492,6 +5498,8 @@ class MainWindow(Gtk.ApplicationWindow):
         for pattern in ("page-*", "raw-*"):
             for old_file in scan_dir.glob(pattern):
                 old_file.unlink(missing_ok=True)
+        completion_marker = scan_dir / "twain-complete.json"
+        completion_marker.unlink(missing_ok=True)
 
         build_command = build_twain_scan_command if is_twain else build_wia_scan_command
         command = build_command(
@@ -5541,6 +5549,7 @@ class MainWindow(Gtk.ApplicationWindow):
         files: list[Path] = []
         conversion_started = bridge_started
         bridge_seconds = 0.0
+        early_flatbed = False
         try:
             if is_twain:
                 started = time.monotonic()
@@ -5596,6 +5605,16 @@ class MainWindow(Gtk.ApplicationWindow):
 
                     while process.poll() is None:
                         collect_pages()
+                        if source == "Flatbed" and len(files) == 1 and completion_marker.is_file():
+                            try:
+                                completed_job = json.loads(
+                                    completion_marker.read_text(encoding="utf-8")
+                                )
+                            except (OSError, ValueError):
+                                completed_job = {}
+                            if isinstance(completed_job, dict) and completed_job.get("pages") == 1:
+                                early_flatbed = True
+                                break
                         if len(queued) > seen_pages:
                             seen_pages = len(queued)
                             last_progress = time.monotonic()
@@ -5608,8 +5627,22 @@ class MainWindow(Gtk.ApplicationWindow):
                             stalled = True
                             break
                         time.sleep(0.2)
-                    stdout, stderr = process.communicate()
-                    bridge_seconds = time.monotonic() - bridge_started
+                    if early_flatbed:
+                        bridge_seconds = time.monotonic() - bridge_started
+                        stdout, stderr = "", ""
+                        self._twain_cleanup_pending = True
+                        self._twain_cleanup_process = process
+                        threading.Thread(
+                            target=self._finish_twain_cleanup,
+                            args=(process, bridge_started),
+                            daemon=True,
+                        ).start()
+                        append_scan_log(
+                            f"TWAIN flatbed complete before driver exit after {bridge_seconds:.2f}s"
+                        )
+                    else:
+                        stdout, stderr = process.communicate()
+                        bridge_seconds = time.monotonic() - bridge_started
                     collect_pages(wait=True)
                 if stalled:
                     append_scan_log(
@@ -5623,7 +5656,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 stdout, stderr = process.communicate()
                 bridge_seconds = time.monotonic() - bridge_started
         except Exception:
-            if process.poll() is None:
+            if not early_flatbed and process.poll() is None:
                 terminate_subprocess(process)
             raise
         finally:
@@ -5670,7 +5703,7 @@ class MainWindow(Gtk.ApplicationWindow):
         for raw_file in raw_files:
             raw_file.unlink(missing_ok=True)
 
-        if process.returncode != 0:
+        if process.returncode not in (None, 0):
             append_scan_log(
                 f"{backend.upper()} preserved partial pages after backend error: "
                 f"{compact_details((twain_error_text if is_twain else bridge_error_text)(stdout, stderr), 600)}"
@@ -5680,12 +5713,47 @@ class MainWindow(Gtk.ApplicationWindow):
             f"{backend.upper()} timing bridge={bridge_seconds:.2f}s "
             f"first_raw={first_raw_after if first_raw_after is not None else 'unknown'}s "
             f"first_preview={first_preview_after if first_preview_after is not None else 'unknown'}s "
-            f"conversion_span={time.monotonic() - conversion_started:.2f}s"
+            f"conversion_span={time.monotonic() - conversion_started:.2f}s "
+            f"cleanup_pending={early_flatbed}"
         )
         updated = dict(profile)
         updated["scan_engine"] = "windows-twain-v1" if is_twain else "windows-wia-v1"
         updated["saved_at"] = int(time.time())
         return files, "", updated
+
+    def _finish_twain_cleanup(
+        self,
+        process: subprocess.Popen,
+        scan_started: float,
+    ) -> None:
+        """Release a completed flatbed scan without holding up its document."""
+        timed_out = False
+        try:
+            try:
+                _stdout, stderr = process.communicate(timeout=15)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                terminate_subprocess(process)
+                _stdout, stderr = process.communicate(timeout=5)
+            append_scan_log(
+                "TWAIN flatbed cleanup "
+                f"rc={process.returncode} timeout={timed_out} "
+                f"elapsed={time.monotonic() - scan_started:.2f}s "
+                f"details={compact_details(stderr, 200)}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            append_scan_log(f"TWAIN flatbed cleanup failed: {compact_details(str(exc), 200)}")
+        finally:
+            GLib.idle_add(self._twain_cleanup_ready, process)
+
+    def _twain_cleanup_ready(self, process: subprocess.Popen) -> bool:
+        if self._twain_cleanup_process is process:
+            self._twain_cleanup_process = None
+            self._twain_cleanup_pending = False
+            self.scan_button.set_sensitive(not self.is_busy)
+            if not self.is_busy and "TWAIN освобождает" in self.status_label.get_text():
+                self.set_status("Сканер готов к следующему сканированию")
+        return False
 
     def _scan_windows_twain(
         self,
@@ -6803,10 +6871,15 @@ class MainWindow(Gtk.ApplicationWindow):
         append_scan_log(
             f"READY added_pages={len(files)} project_pages={len(self.pages)}"
         )
-        self.set_status(
-            f"Сканирование завершено. Добавлено страниц: {len(files)}. "
-            "Профиль устройства сохранён для следующего запуска."
-        )
+        if getattr(self, "_twain_cleanup_pending", False):
+            self.set_status(
+                "Страница со стекла готова. Можно сохранить; TWAIN освобождает сканер…"
+            )
+        else:
+            self.set_status(
+                f"Сканирование завершено. Добавлено страниц: {len(files)}. "
+                "Профиль устройства сохранён для следующего запуска."
+            )
         if warning:
             self.show_info("Ручной дуплекс", warning)
         return False
@@ -7772,7 +7845,7 @@ class MainWindow(Gtk.ApplicationWindow):
         cancellable: bool = False,
     ) -> None:
         self.is_busy = busy
-        self.scan_button.set_sensitive(not busy)
+        self.scan_button.set_sensitive(not busy and not self._twain_cleanup_pending)
         self.cancel_button.set_visible(busy and cancellable)
 
         if busy:
@@ -7838,6 +7911,8 @@ class MainWindow(Gtk.ApplicationWindow):
                 return True
 
         self.cancel_operation()
+        if self._twain_cleanup_process is not None:
+            terminate_subprocess(self._twain_cleanup_process)
 
         try:
             self._save_ui_settings()

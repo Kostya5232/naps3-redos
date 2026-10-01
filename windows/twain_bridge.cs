@@ -148,9 +148,26 @@ internal static class TwainBridge
                 throw new InvalidOperationException(_error);
             if (_pages == 0)
                 throw new InvalidOperationException(feeder ? "В автоподатчике нет документов." : "TWAIN-сканер не передал страницу.");
-            // Some drivers report their last page before notifying the DSM of
-            // source shutdown. Wait a little for normal cleanup (Kyocera does).
-            WriteJson("{\"pages\":" + _pages + ",\"dpi\":" + dpi + "}");
+            string result = "{\"pages\":" + _pages + ",\"dpi\":" + dpi + "}";
+            if (!feeder)
+            {
+                // One complete flatbed page is enough to release the document
+                // to the UI. The TWAIN source may still take a long time to
+                // close; publish a separate atomic completion marker first.
+                string marker = Path.Combine(_outputDirectory, "twain-complete.json");
+                string partial = marker + ".part";
+                try
+                {
+                    File.WriteAllText(partial, result, new UTF8Encoding(false));
+                    if (File.Exists(marker)) File.Delete(marker);
+                    File.Move(partial, marker);
+                }
+                finally
+                {
+                    if (File.Exists(partial)) File.Delete(partial);
+                }
+            }
+            WriteJson(result);
             return 0;
         }
         catch (Exception ex)

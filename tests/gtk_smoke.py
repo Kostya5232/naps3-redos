@@ -94,6 +94,13 @@ def main() -> int:
         assert window.scan_button.get_sensitive()
         assert window.save_button.get_sensitive()
 
+        window._twain_cleanup_pending = True
+        window.set_busy(False)
+        assert not window.scan_button.get_sensitive()
+        assert window.save_button.get_sensitive()
+        window._twain_cleanup_pending = False
+        window.set_busy(False)
+
         window._update_source_options({
             "adf_capabilities_known": True,
             "adf_present": True,

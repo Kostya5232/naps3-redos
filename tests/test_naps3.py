@@ -787,6 +787,116 @@ class CancellationTests(unittest.TestCase):
 
 
 class TwainProgressTests(unittest.TestCase):
+    def test_stuck_flatbed_cleanup_is_bounded_without_losing_page(self) -> None:
+        class SlowProcess:
+            returncode = None
+
+            def __init__(self):
+                self.waits = []
+
+            def communicate(self, timeout):
+                self.waits.append(timeout)
+                if len(self.waits) == 1:
+                    raise subprocess.TimeoutExpired("twain-bridge", timeout)
+                return "", ""
+
+        process = SlowProcess()
+        owner = SimpleNamespace(_twain_cleanup_ready=mock.Mock())
+        with mock.patch.object(naps3, "terminate_subprocess") as terminate, mock.patch.object(
+            naps3.GLib, "idle_add", side_effect=lambda callback, *args: callback(*args)
+        ):
+            naps3.MainWindow._finish_twain_cleanup(owner, process, time.monotonic())
+        self.assertEqual(process.waits, [15, 5])
+        terminate.assert_called_once_with(process)
+        owner._twain_cleanup_ready.assert_called_once_with(process)
+
+    def test_flatbed_document_finishes_while_driver_is_still_closing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scan_dir = Path(directory)
+            cleanup_started = threading.Event()
+            cleanup_released = threading.Event()
+            result_ready = threading.Event()
+
+            class FakeProcess:
+                returncode = None
+
+                def poll(self):
+                    return None if not cleanup_released.is_set() else 0
+
+                def communicate(self):
+                    cleanup_released.wait(4)
+                    self.returncode = 0
+                    return '{"pages":1}', ""
+
+                def kill(self):
+                    cleanup_released.set()
+
+            process = FakeProcess()
+            owner = SimpleNamespace(
+                current_process=None,
+                cancel_requested=False,
+                _twain_cleanup_pending=False,
+                _twain_cleanup_process=None,
+                _set_device_profile=mock.Mock(),
+                set_status=mock.Mock(),
+                _scan_page_ready=mock.Mock(),
+                _convert_stream_document=lambda *args: naps3.MainWindow._convert_stream_document(
+                    owner, *args
+                ),
+                _finish_twain_cleanup=lambda *_args: (
+                    cleanup_started.set(), cleanup_released.wait(4)
+                ),
+            )
+            result: dict[str, object] = {}
+
+            def run_scan() -> None:
+                try:
+                    result["value"] = naps3.MainWindow._scan_windows_wia(
+                        owner, scan_dir,
+                        {"name": "Kyocera", "device_id": "ECOSYS MA4000x (USB)"},
+                        "Flatbed", "Color", 300, "A4", backend="twain",
+                    )
+                except BaseException as exc:
+                    result["error"] = exc
+                finally:
+                    result_ready.set()
+
+            with mock.patch.object(
+                naps3, "build_twain_scan_command", return_value=["fake-bridge"]
+            ), mock.patch.object(
+                naps3.subprocess, "Popen", return_value=process
+            ), mock.patch.object(
+                naps3.GLib, "idle_add", side_effect=lambda callback, *args: callback(*args)
+            ):
+                worker = threading.Thread(target=run_scan, daemon=True)
+                worker.start()
+                deadline = time.monotonic() + 2
+                while owner.current_process is not process and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertIs(owner.current_process, process)
+                with Image.new("RGB", (20, 20), "white") as image:
+                    image.save(scan_dir / "raw-0001.bmp.part", format="BMP")
+                (scan_dir / "raw-0001.bmp.part").replace(scan_dir / "raw-0001.bmp")
+                (scan_dir / "twain-complete.json.part").write_text(
+                    '{"pages":1,"dpi":300}', encoding="utf-8"
+                )
+                (scan_dir / "twain-complete.json.part").replace(
+                    scan_dir / "twain-complete.json"
+                )
+                try:
+                    self.assertTrue(result_ready.wait(4))
+                    self.assertTrue(cleanup_started.wait(1))
+                    self.assertFalse(cleanup_released.is_set())
+                    self.assertTrue(owner._twain_cleanup_pending)
+                finally:
+                    cleanup_released.set()
+                    worker.join(timeout=4)
+
+            self.assertNotIn("error", result)
+            files, error, _profile = result["value"]
+            self.assertEqual(error, "")
+            self.assertEqual([page.name for page in files], ["page-0001.png"])
+
     def test_cancel_keeps_complete_page_even_if_preview_callback_is_pending(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             scan_dir = Path(directory)
