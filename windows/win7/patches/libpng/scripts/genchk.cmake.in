@@ -1,0 +1,30 @@
+# Based on libpng 1.6.38 scripts/genchk.cmake.in.
+# The upstream template incorrectly looks for checksym.awk in the binary dir.
+# Copyright (C) 2016 Glenn Randers-Pehrson
+# Written by Roger Leigh, 2016
+# Distributed under the libpng license (see libpng's png.h).
+
+set(SRCDIR "@CMAKE_CURRENT_SOURCE_DIR@")
+set(BINDIR "@CMAKE_CURRENT_BINARY_DIR@")
+set(AWK "@AWK@")
+
+get_filename_component(INPUTEXT "${INPUT}" EXT)
+get_filename_component(OUTPUTEXT "${OUTPUT}" EXT)
+get_filename_component(INPUTBASE "${INPUT}" NAME_WE)
+get_filename_component(OUTPUTBASE "${OUTPUT}" NAME_WE)
+get_filename_component(OUTPUTDIR "${OUTPUT}" PATH)
+
+if("${INPUTEXT}" STREQUAL ".out" AND "${OUTPUTEXT}" STREQUAL ".chk")
+  file(REMOVE "${OUTPUT}" "${OUTPUTDIR}/${OUTPUTBASE}.new")
+  execute_process(COMMAND "${AWK}" -f "${SRCDIR}/scripts/checksym.awk"
+                          "${SRCDIR}/scripts/${INPUTBASE}.def"
+                          "of=${OUTPUTDIR}/${OUTPUTBASE}.new"
+                          "${INPUT}"
+                  RESULT_VARIABLE AWK_FAIL)
+  if(AWK_FAIL)
+    message(FATAL_ERROR "Failed to generate ${OUTPUTDIR}/${OUTPUTBASE}.new")
+  endif()
+  file(RENAME "${OUTPUTDIR}/${OUTPUTBASE}.new" "${OUTPUT}")
+else()
+  message(FATAL_ERROR "Unsupported conversion: ${INPUTEXT} to ${OUTPUTEXT}")
+endif()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import socket
 import struct
 import subprocess
@@ -32,13 +33,23 @@ class RuntimeCheckTests(unittest.TestCase):
             naps3,
             "run_wia_bridge",
             side_effect=naps3.WindowsBackendError("WIA-мост недоступен"),
-        ), mock.patch.object(naps3, "find_runtime_executable", return_value=None):
+        ), mock.patch.object(naps3, "find_runtime_executable", return_value=None), mock.patch(
+            "pdf_import.pdfium_available", return_value=False
+        ):
             error = naps3.check_runtime(strict_windows=True)
 
         self.assertIsNotNone(error)
         assert error is not None
         self.assertIn("WIA-мост недоступен", error)
         self.assertIn("pdftoppm", error)
+
+    def test_windows_self_test_accepts_pdfium_without_pdftoppm(self) -> None:
+        with mock.patch.object(naps3, "IS_WINDOWS", True), mock.patch.object(
+            naps3, "run_wia_bridge", return_value={"ok": True}
+        ), mock.patch.object(
+            naps3, "find_runtime_executable", return_value=None
+        ), mock.patch("pdf_import.pdfium_available", return_value=True):
+            self.assertIsNone(naps3.check_runtime(strict_windows=True))
 
 
 class EsclParsingTests(unittest.TestCase):
@@ -234,6 +245,57 @@ class LocalScannerDiscoveryTests(unittest.TestCase):
         ]
         self.assertIsNone(naps3.choose_usb_profile(profiles, "MA4000x"))
         self.assertIs(naps3.choose_usb_profile(profiles, "ECOSYS MA4000x (USB)"), profiles[1])
+
+    def test_windows_connection_method_uses_only_requested_driver(self) -> None:
+        wia_profile = {"name": "Kyocera WIA", "backend": "wia"}
+        twain_profile = {"name": "Kyocera TWAIN", "backend": "twain"}
+        with mock.patch.object(naps3, "IS_WINDOWS", True), mock.patch.object(
+            naps3, "discover_wia_scanners", return_value=[wia_profile]
+        ) as wia, mock.patch.object(
+            naps3, "discover_twain_scanners", return_value=[twain_profile]
+        ) as twain:
+            self.assertEqual(naps3.discover_usb_scanners("Kyocera", "wia"), [wia_profile])
+            twain.assert_not_called()
+            self.assertEqual(naps3.discover_usb_scanners("Kyocera", "twain"), [twain_profile])
+            self.assertEqual(naps3.discover_usb_scanners("Kyocera", "auto"), [wia_profile, twain_profile])
+        self.assertEqual(wia.call_count, 2)
+        self.assertEqual(twain.call_count, 2)
+
+    def test_twain_hardware_duplex_is_not_rejected_without_resolution_list(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = {
+                "name": "Kyocera ECOSYS MA4000x",
+                "backend": "twain",
+                "device_id": "ECOSYS MA4000x (USB)",
+                "adf_capabilities_known": True,
+                "adf_present": True,
+                "adf_duplex_supported": True,
+            }
+            owner = SimpleNamespace(
+                is_busy=False,
+                source_combo=mock.Mock(get_active_id=lambda: "ADF Duplex"),
+                mode_combo=mock.Mock(get_active_id=lambda: "Color"),
+                dpi_combo=mock.Mock(get_active_id=lambda: "300"),
+                paper_combo=mock.Mock(get_active_id=lambda: "A4"),
+                match_entry=mock.Mock(get_text=lambda: "Kyocera"),
+                scanner_profile=profile,
+                connection_method_combo=mock.Mock(get_active_id=lambda: "twain"),
+                stream_adf_check=mock.Mock(get_active=lambda: True),
+                ask_yes_no=mock.Mock(return_value=True),
+                _save_ui_settings=mock.Mock(),
+                set_busy=mock.Mock(),
+                show_error=mock.Mock(),
+                session_dir=Path(temporary),
+                scan_sequence=0,
+            )
+            with mock.patch.object(naps3, "IS_WINDOWS", True), mock.patch.object(
+                naps3.threading, "Thread"
+            ) as worker:
+                naps3.MainWindow.start_scan(owner)
+            owner.show_error.assert_not_called()
+            owner.source_combo.set_active_id.assert_not_called()
+            owner.set_busy.assert_called_once()
+            worker.assert_called_once()
 
 
 class NetworkScannerDiscoveryTests(unittest.TestCase):
@@ -475,6 +537,24 @@ class ExportHarness:
 
 
 class ExportTests(unittest.TestCase):
+    def assert_pdf_pages(self, output: Path, expected: int) -> None:
+        pdfinfo = shutil.which("pdfinfo")
+        if pdfinfo:
+            metadata = subprocess.run(
+                [pdfinfo, str(output)], check=True, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            ).stdout
+            self.assertRegex(metadata, rf"(?m)^Pages:\s+{expected}$")
+            return
+
+        from pypdfium2._helpers import PdfDocument
+
+        document = PdfDocument(str(output))
+        try:
+            self.assertEqual(len(document), expected)
+        finally:
+            document.close()
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.directory = Path(self.temporary.name)
@@ -496,11 +576,7 @@ class ExportTests(unittest.TestCase):
         })
         self.assertEqual(result["path"], output)
         self.assertTrue(output.read_bytes().startswith(b"%PDF-"))
-        metadata = subprocess.run(
-            ["pdfinfo", str(output)], check=True, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        ).stdout
-        self.assertRegex(metadata, r"(?m)^Pages:\s+3$")
+        self.assert_pdf_pages(output, 3)
 
     def test_exports_multipage_tiff(self) -> None:
         output = self.directory / "result.tiff"
@@ -522,11 +598,7 @@ class ExportTests(unittest.TestCase):
                 self.assertGreater(output.stat().st_size, 0)
                 if file_format == "PDF":
                     self.assertTrue(output.read_bytes().startswith(b"%PDF-"))
-                    metadata = subprocess.run(
-                        ["pdfinfo", str(output)], check=True, text=True,
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    ).stdout
-                    self.assertRegex(metadata, r"(?m)^Pages:\s+1$")
+                    self.assert_pdf_pages(output, 1)
                 else:
                     with Image.open(output) as exported:
                         exported.verify()
@@ -555,11 +627,7 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(len(outputs), 3)
         for output in outputs:
             self.assertTrue(output.read_bytes().startswith(b"%PDF-"))
-            metadata = subprocess.run(
-                ["pdfinfo", str(output)], check=True, text=True,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            ).stdout
-            self.assertRegex(metadata, r"(?m)^Pages:\s+1$")
+            self.assert_pdf_pages(output, 1)
 
     def test_pdf_is_default_export_format(self) -> None:
         self.assertEqual(naps3.DEFAULT_EXPORT_FORMAT, "PDF")
@@ -716,6 +784,240 @@ class CancellationTests(unittest.TestCase):
             self.assertIsInstance(result.get("exception"), naps3.Naps3Error)
             self.assertIn("отменено", str(result["exception"]))
             self.assertIsNone(owner.current_process)
+
+
+class TwainProgressTests(unittest.TestCase):
+    def test_stuck_flatbed_cleanup_is_bounded_without_losing_page(self) -> None:
+        class SlowProcess:
+            returncode = None
+
+            def __init__(self):
+                self.waits = []
+
+            def communicate(self, timeout):
+                self.waits.append(timeout)
+                if len(self.waits) == 1:
+                    raise subprocess.TimeoutExpired("twain-bridge", timeout)
+                return "", ""
+
+        process = SlowProcess()
+        owner = SimpleNamespace(_twain_cleanup_ready=mock.Mock())
+        with mock.patch.object(naps3, "terminate_subprocess") as terminate, mock.patch.object(
+            naps3.GLib, "idle_add", side_effect=lambda callback, *args: callback(*args)
+        ):
+            naps3.MainWindow._finish_twain_cleanup(owner, process, time.monotonic())
+        self.assertEqual(process.waits, [15, 5])
+        terminate.assert_called_once_with(process)
+        owner._twain_cleanup_ready.assert_called_once_with(process)
+
+    def test_flatbed_document_finishes_while_driver_is_still_closing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scan_dir = Path(directory)
+            cleanup_started = threading.Event()
+            cleanup_released = threading.Event()
+            cleanup_finished = threading.Event()
+            result_ready = threading.Event()
+
+            def finish_cleanup(*_args) -> None:
+                cleanup_started.set()
+                cleanup_released.wait(4)
+                cleanup_finished.set()
+
+            class FakeProcess:
+                returncode = None
+
+                def poll(self):
+                    return None if not cleanup_released.is_set() else 0
+
+                def communicate(self):
+                    cleanup_released.wait(4)
+                    self.returncode = 0
+                    return '{"pages":1}', ""
+
+                def kill(self):
+                    cleanup_released.set()
+
+            process = FakeProcess()
+            owner = SimpleNamespace(
+                current_process=None,
+                cancel_requested=False,
+                _twain_cleanup_pending=False,
+                _twain_cleanup_process=None,
+                _set_device_profile=mock.Mock(),
+                set_status=mock.Mock(),
+                _scan_page_ready=mock.Mock(),
+                _convert_stream_document=lambda *args: naps3.MainWindow._convert_stream_document(
+                    owner, *args
+                ),
+                _finish_twain_cleanup=finish_cleanup,
+            )
+            result: dict[str, object] = {}
+
+            def run_scan() -> None:
+                try:
+                    result["value"] = naps3.MainWindow._scan_windows_wia(
+                        owner, scan_dir,
+                        {"name": "Kyocera", "device_id": "ECOSYS MA4000x (USB)"},
+                        "Flatbed", "Color", 300, "A4", backend="twain",
+                    )
+                except BaseException as exc:
+                    result["error"] = exc
+                finally:
+                    result_ready.set()
+
+            with mock.patch.object(
+                naps3, "build_twain_scan_command", return_value=["fake-bridge"]
+            ), mock.patch.object(
+                naps3.subprocess, "Popen", return_value=process
+            ), mock.patch.object(
+                naps3.GLib, "idle_add", side_effect=lambda callback, *args: callback(*args)
+            ):
+                worker = threading.Thread(target=run_scan, daemon=True)
+                worker.start()
+                deadline = time.monotonic() + 2
+                while owner.current_process is not process and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertIs(owner.current_process, process)
+                with Image.new("RGB", (20, 20), "white") as image:
+                    image.save(scan_dir / "raw-0001.bmp.part", format="BMP")
+                (scan_dir / "raw-0001.bmp.part").replace(scan_dir / "raw-0001.bmp")
+                (scan_dir / "twain-complete.json.part").write_text(
+                    '{"pages":1,"dpi":300}', encoding="utf-8"
+                )
+                (scan_dir / "twain-complete.json.part").replace(
+                    scan_dir / "twain-complete.json"
+                )
+                try:
+                    self.assertTrue(result_ready.wait(4))
+                    self.assertTrue(cleanup_started.wait(1))
+                    self.assertFalse(cleanup_released.is_set())
+                    self.assertTrue(owner._twain_cleanup_pending)
+                finally:
+                    cleanup_released.set()
+                    worker.join(timeout=4)
+                    self.assertTrue(cleanup_finished.wait(4))
+
+            self.assertNotIn("error", result)
+            files, error, _profile = result["value"]
+            self.assertEqual(error, "")
+            self.assertEqual([page.name for page in files], ["page-0001.png"])
+
+    def test_cancel_keeps_complete_page_even_if_preview_callback_is_pending(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scan_dir = Path(directory)
+            page = scan_dir / "page-0001.png"
+            with Image.new("RGB", (8, 8), "white") as image:
+                image.save(page)
+            owner = SimpleNamespace(
+                pages=[],
+                cancel_requested=True,
+                _scan_streaming_enabled=True,
+                _scan_streamed_pages=0,
+                active_scan_dir=scan_dir,
+                current_process=None,
+                current_escl_job_url=None,
+                current_escl_response=None,
+                set_busy=mock.Mock(),
+                add_pages=lambda paths: owner.pages.extend(
+                    naps3.Page(path=path, label=path.name) for path in paths
+                ),
+                set_status=mock.Mock(),
+                show_error=mock.Mock(),
+            )
+            naps3.MainWindow._scan_ready(owner, [], "cancelled", {})
+            self.assertEqual([item.path for item in owner.pages], [page])
+            owner.show_error.assert_not_called()
+
+    def test_scan_completion_does_not_add_streamed_page_twice(self) -> None:
+        first = Path("page-0001.png")
+        second = Path("page-0002.png")
+        owner = SimpleNamespace(
+            pages=[naps3.Page(path=first, label=first.name)],
+            cancel_requested=False,
+            current_process=None,
+            current_escl_job_url=None,
+            current_escl_response=None,
+            active_scan_dir=Path("scan"),
+            set_busy=mock.Mock(),
+            add_pages=mock.Mock(),
+            set_status=mock.Mock(),
+        )
+        naps3.MainWindow._scan_ready(owner, [first, second], "", {})
+        owner.add_pages.assert_called_once_with([second])
+        self.assertIsNone(owner.active_scan_dir)
+
+    def test_complete_page_is_published_before_driver_exits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scan_dir = Path(directory)
+            shown = threading.Event()
+            released = threading.Event()
+
+            class FakeProcess:
+                returncode = None
+
+                def poll(self):
+                    return 0 if released.is_set() else None
+
+                def communicate(self):
+                    released.wait(4)
+                    self.returncode = 0
+                    return '{"pages":1}', ""
+
+                def kill(self):
+                    released.set()
+
+            process = FakeProcess()
+            owner = SimpleNamespace(
+                current_process=None,
+                cancel_requested=False,
+                _set_device_profile=mock.Mock(),
+                set_status=mock.Mock(),
+                _scan_page_ready=lambda *_args: shown.set(),
+                _convert_stream_document=lambda *args: naps3.MainWindow._convert_stream_document(
+                    owner, *args
+                ),
+            )
+            result: dict[str, object] = {}
+
+            def run_scan() -> None:
+                try:
+                    result["value"] = naps3.MainWindow._scan_windows_wia(
+                        owner, scan_dir,
+                        {"name": "Kyocera", "device_id": "ECOSYS MA4000x (USB)"},
+                        "ADF", "Color", 300, "A4", backend="twain",
+                    )
+                except BaseException as exc:
+                    result["error"] = exc
+
+            with mock.patch.object(
+                naps3, "build_twain_scan_command", return_value=["fake-bridge"]
+            ), mock.patch.object(
+                naps3.subprocess, "Popen", return_value=process
+            ), mock.patch.object(
+                naps3.GLib, "idle_add", side_effect=lambda callback, *args: callback(*args)
+            ):
+                worker = threading.Thread(target=run_scan, daemon=True)
+                worker.start()
+                deadline = time.monotonic() + 2.0
+                while owner.current_process is not process and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertIs(owner.current_process, process)
+                partial = scan_dir / "raw-0001.bmp.part"
+                with Image.new("RGB", (20, 20), "white") as image:
+                    image.save(partial, format="BMP")
+                partial.replace(scan_dir / "raw-0001.bmp")
+                try:
+                    self.assertTrue(shown.wait(4), "the page must appear before TWAIN exits")
+                    self.assertFalse(released.is_set())
+                finally:
+                    released.set()
+                    worker.join(timeout=4)
+
+            self.assertFalse(worker.is_alive())
+            self.assertNotIn("error", result)
+            files, error, _profile = result["value"]
+            self.assertEqual(error, "")
+            self.assertEqual([path.name for path in files], ["page-0001.png"])
 
 
 if __name__ == "__main__":

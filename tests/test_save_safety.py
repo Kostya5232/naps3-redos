@@ -259,10 +259,7 @@ class DocumentSafetyTests(unittest.TestCase):
         for path in self.files:
             with Image.new("RGB", (12, 18), "white") as image:
                 image.save(path)
-        self.responses = SimpleNamespace(ACCEPT=1, REJECT=2, CANCEL=3, OK=4)
-        patcher = mock.patch.object(naps3.Gtk, "ResponseType", self.responses, create=True)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        self.responses = naps3.Gtk.ResponseType
 
     def full_result(self, **overrides):
         return {

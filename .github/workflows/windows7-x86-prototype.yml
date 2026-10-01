@@ -1,0 +1,163 @@
+name: Windows 7 x86 prototype
+
+on:
+  push:
+    branches:
+      - feature/windows7-x86-prototype
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  gtk:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - name: Checkout NAPS3
+        uses: actions/checkout@v5
+
+      - name: Install Python 3.8 x86
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.8.10'
+          architecture: x86
+
+      - name: Install MSYS2 build tools
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW32
+          update: true
+          install: >-
+            git
+            make
+            patch
+
+      - name: Check Python 3.8 syntax
+        shell: pwsh
+        run: |
+          python -c "import struct,sys; assert sys.version_info[:2] == (3,8) and struct.calcsize('P') == 4"
+          python -m compileall -q naps3.py pdf_import.py windows_backend.py windows tests
+
+      - name: Fetch pinned GTK build recipe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path C:\gtk-build\github -Force | Out-Null
+          git clone --depth 1 --branch 2022.6.0 https://github.com/wingtk/gvsbuild.git C:\gtk-build\github\gvsbuild
+          if ((git -C C:\gtk-build\github\gvsbuild rev-parse HEAD).Trim() -ne 'beeef2c42f35d8872412663589effc11851555c6') {
+            throw 'Unexpected gvsbuild commit'
+          }
+          # SourceForge currently serves an empty libjpeg-turbo archive to CI.
+          # The official GitHub release asset has the same pinned SHA-256.
+          $recipe = 'C:\gtk-build\github\gvsbuild\gvsbuild\projects\libjpeg_turbo.py'
+          $source = [IO.File]::ReadAllText($recipe)
+          $oldUrl = 'https://sourceforge.net/projects/libjpeg-turbo/files/{version}/libjpeg-turbo-{version}.tar.gz'
+          $newUrl = 'https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/{version}/libjpeg-turbo-{version}.tar.gz'
+          if (-not $source.Contains($oldUrl)) { throw 'Unexpected libjpeg-turbo recipe' }
+          [IO.File]::WriteAllText($recipe, $source.Replace($oldUrl, $newUrl))
+          # The libpng SourceForge mirror now returns HTTP 522. Build the same
+          # official v1.6.38 tag from GitHub with its separately pinned hash.
+          $recipe = 'C:\gtk-build\github\gvsbuild\gvsbuild\projects\libpng.py'
+          $source = [IO.File]::ReadAllText($recipe)
+          $oldUrl = 'http://prdownloads.sourceforge.net/libpng/libpng-{version}.tar.xz'
+          $newUrl = 'https://github.com/pnggroup/libpng/archive/refs/tags/v{version}.tar.gz'
+          $oldHash = 'b3683e8b8111ebf6f1ac004ebb6b0c975cd310ec469d98364388e9cedbfa68be'
+          $newHash = 'd4160037fa5d09fa7cff555037f2a7f2fefc99ca01e21723b19bfcda33015234'
+          if (-not $source.Contains($oldUrl) -or -not $source.Contains($oldHash)) { throw 'Unexpected libpng recipe' }
+          [IO.File]::WriteAllText($recipe, $source.Replace($oldUrl, $newUrl).Replace($oldHash, $newHash))
+          # libpng 1.6.38's genchk template incorrectly finds checksym.awk in
+          # the CMake build directory. gvsbuild copies patch files over sources.
+          New-Item -ItemType Directory -Path C:\gtk-build\github\gvsbuild\gvsbuild\patches\libpng\scripts -Force | Out-Null
+          Copy-Item -Path windows\win7\patches\libpng\scripts\genchk.cmake.in -Destination C:\gtk-build\github\gvsbuild\gvsbuild\patches\libpng\scripts\genchk.cmake.in -Force
+          New-Item -ItemType Directory -Path C:\gtk-build\github\gvsbuild\gvsbuild\patches\fontconfig -Force | Out-Null
+          Copy-Item -Path windows\win7\patches\fontconfig\gperf-windows.patch -Destination C:\gtk-build\github\gvsbuild\gvsbuild\patches\fontconfig\gperf-windows.patch -Force
+          $recipe = 'C:\gtk-build\github\gvsbuild\gvsbuild\projects\fontconfig.py'
+          $source = [IO.File]::ReadAllText($recipe)
+          $target = 'dependencies=["freetype", "gperf", "expat"],'
+          if (-not $source.Contains($target)) { throw 'Unexpected fontconfig recipe' }
+          [IO.File]::WriteAllText($recipe, $source.Replace($target, $target + "`n            patches=['gperf-windows.patch'],"))
+          New-Item -ItemType Directory -Path C:\gtk-build\github\gvsbuild\gvsbuild\patches\pixman\pc-files -Force | Out-Null
+          Copy-Item -Path windows\win7\patches\pixman\pc-files\pixman-1.pc -Destination C:\gtk-build\github\gvsbuild\gvsbuild\patches\pixman\pc-files\pixman-1.pc -Force
+          $recipe = 'C:\gtk-build\github\gvsbuild\gvsbuild\projects\pixman.py'
+          $source = [IO.File]::ReadAllText($recipe)
+          $target = 'self.install(r".\COPYING share\doc\pixman")'
+          if (-not $source.Contains($target)) { throw 'Unexpected pixman recipe' }
+          [IO.File]::WriteAllText($recipe, $source.Replace($target, "self.install_pc_files()`n        " + $target))
+          python -m pip install 'pip<25' 'setuptools<70' wheel
+          python -m pip install C:\gtk-build\github\gvsbuild
+
+      - name: Build Windows 7 era GTK and PyGObject for x86
+        shell: pwsh
+        run: |
+          # setup-msys2 exports MSYSTEM=MINGW32. g-ir-scanner interprets this
+          # as a request to use MinGW, while gvsbuild uses MSVC throughout.
+          Remove-Item Env:MSYSTEM -ErrorAction SilentlyContinue
+          gvsbuild build --platform x86 --enable-gi --py-wheel --patches-root-dir C:\gtk-build\github\gvsbuild\gvsbuild\patches gtk3 pygobject
+
+      - name: Smoke test GTK on x86 Python
+        shell: pwsh
+        run: |
+          $env:Path = 'C:\gtk-build\gtk\Win32\release\bin;' + $env:Path
+          $env:GI_TYPELIB_PATH = 'C:\gtk-build\gtk\Win32\release\lib\girepository-1.0'
+          python -c "import struct,gi; gi.require_version('Gtk','3.0'); from gi.repository import Gtk; assert struct.calcsize('P') == 4; print('GTK', Gtk.MAJOR_VERSION, Gtk.MINOR_VERSION)"
+
+      - name: Build single x86 application for Windows 7 x86 and x64
+        shell: pwsh
+        run: .\windows\win7\build_x86.ps1
+
+      - name: Test application and Windows bridges
+        shell: pwsh
+        run: |
+          $env:Path = 'C:\gtk-build\gtk\Win32\release\bin;' + $env:Path
+          $env:GI_TYPELIB_PATH = 'C:\gtk-build\gtk\Win32\release\lib\girepository-1.0'
+          $exe = '.\dist\windows7-x86\NAPS3\NAPS3.exe'
+          python -c "import struct; p=open(r'$exe','rb').read(); o=struct.unpack_from('<I',p,0x3c)[0]; assert struct.unpack_from('<H',p,o+4)[0]==0x14c, 'NAPS3.exe is not x86'"
+          if ($LASTEXITCODE -ne 0) { throw 'Package architecture is not x86' }
+          $process = Start-Process -FilePath $exe -ArgumentList '--self-test' -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Packaged self-test failed: $($process.ExitCode)" }
+          python windows\check_gui_startup.py $exe
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged GUI did not open' }
+          python -m unittest discover -v -s tests -p 'test_*.py'
+          if ($LASTEXITCODE -ne 0) { throw 'Unit tests failed' }
+
+      - name: Create x86 installer and portable ZIP
+        shell: pwsh
+        run: .\windows\build_installer.ps1 -ApplicationDirectory .\dist\windows7-x86\NAPS3 -OutputDirectory .\dist\windows7-x86\release -Architecture x86
+
+      - name: Install and smoke test x86 package
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem .\dist\windows7-x86\release -Filter 'NAPS3-*-Windows-x86.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'x86 installer is missing' }
+          $install = Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "x86 installer failed: $($install.ExitCode)" }
+          $exe = Join-Path $env:LOCALAPPDATA 'Programs\NAPS3\NAPS3.exe'
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "Installed application is missing: $exe" }
+          $test = Start-Process -FilePath $exe -ArgumentList '--self-test' -Wait -PassThru
+          if ($test.ExitCode -ne 0) { throw "Installed x86 self-test failed: $($test.ExitCode)" }
+
+      - name: Create stable x86 installer link
+        if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+        shell: pwsh
+        run: |
+          $release = Resolve-Path .\dist\windows7-x86\release
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          Copy-Item -LiteralPath "$release\NAPS3-$version-Windows-x86.exe" -Destination "$release\NAPS3-latest-Windows-x86.exe"
+          $files = Get-ChildItem -LiteralPath $release -File | Where-Object Name -Match '\.(exe|zip)$'
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          [IO.File]::WriteAllLines("$release\SHA256SUMS.windows7-x86", $lines, [Text.UTF8Encoding]::new($false))
+
+      - name: Upload Windows 7 test package
+        uses: actions/upload-artifact@v6
+        with:
+          name: naps3-windows7-x86-candidate
+          path: |
+            dist/windows7-x86/release/*.exe
+            dist/windows7-x86/release/*.zip
+            dist/windows7-x86/release/SHA256SUMS.windows7-x86
+          if-no-files-found: error
+          retention-days: 14

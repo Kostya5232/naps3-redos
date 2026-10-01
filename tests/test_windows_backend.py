@@ -127,6 +127,24 @@ class WindowsBackendTests(unittest.TestCase):
         ])
         self.assertNotIn("powershell", " ".join(command).casefold())
 
+    def test_twain_capabilities_require_driver_boolean_values(self) -> None:
+        with mock.patch.object(
+            windows_backend, "run_twain_bridge",
+            return_value={"has_adf": True, "has_duplex": True},
+        ) as bridge:
+            capabilities = windows_backend.inspect_twain_device("ECOSYS MA4000x (USB)")
+        self.assertEqual(capabilities, {"has_adf": True, "has_duplex": True})
+        bridge.assert_called_once_with(
+            "capabilities", "ECOSYS MA4000x (USB)", timeout=20.0
+        )
+
+        with mock.patch.object(
+            windows_backend, "run_twain_bridge",
+            return_value={"has_adf": True, "has_duplex": "unknown"},
+        ):
+            with self.assertRaises(windows_backend.WindowsBackendError):
+                windows_backend.inspect_twain_device("ECOSYS MA4000x (USB)")
+
     def test_twain_error_ignores_native_stderr_diagnostic(self) -> None:
         error = windows_backend.twain_error_text(
             "", 'CreateDirectory() errorCode == 183\n{"error":"Нет бумаги"}\n'

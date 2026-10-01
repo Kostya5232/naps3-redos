@@ -1,0 +1,11 @@
+--- a/meson.build
++++ b/meson.build
+@@ -334,6 +334,5 @@
+   @1@
+   '''
+-  gperf_snippet_format = 'echo foo,bar | @0@ -L ANSI-C'
+-  gperf_snippet = run_command(sh, '-c', gperf_snippet_format.format(gperf.full_path()),
+-    check: true)
++  gperf_snippet = run_command(sh, '-c', 'echo foo,bar | "$1" -L ANSI-C',
++    '_', gperf.full_path(), check: true)
+   gperf_test = gperf_test_format.format('size_t', gperf_snippet.stdout())

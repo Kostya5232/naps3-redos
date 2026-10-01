@@ -51,6 +51,13 @@ def main() -> int:
         window.cancel_button.hide()
         drain_events()
 
+        method_dialog = naps3.USBConnectionMethodDialog(window, "twain")
+        assert method_dialog.get_backend() == "twain"
+        method_dialog.methods["wia"].set_active(True)
+        assert method_dialog.get_backend() == "wia"
+        method_dialog.destroy()
+        drain_events()
+
         first = root / "first.png"
         second = root / "second.png"
         with Image.new("RGB", (120, 180), "white") as image:
@@ -87,6 +94,13 @@ def main() -> int:
         assert window.scan_button.get_sensitive()
         assert window.save_button.get_sensitive()
 
+        window._twain_cleanup_pending = True
+        window.set_busy(False)
+        assert not window.scan_button.get_sensitive()
+        assert window.save_button.get_sensitive()
+        window._twain_cleanup_pending = False
+        window.set_busy(False)
+
         window._update_source_options({
             "adf_capabilities_known": True,
             "adf_present": True,
@@ -102,6 +116,15 @@ def main() -> int:
         })
         assert combo_ids(window.source_combo) == [
             "ADF", "ADF Duplex", "Flatbed"
+        ]
+        window._update_source_options({
+            "backend": "twain",
+            "adf_capabilities_known": True,
+            "adf_present": True,
+            "adf_duplex_supported": True,
+        })
+        assert combo_ids(window.source_combo) == [
+            "ADF", "ADF Duplex", "ADF Manual Duplex", "Flatbed"
         ]
 
         window.destroy()

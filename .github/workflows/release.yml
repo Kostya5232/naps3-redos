@@ -163,10 +163,14 @@ jobs:
             dist/windows/release/SHA256SUMS.windows
           if-no-files-found: error
 
+  windows7:
+    uses: ./.github/workflows/windows7-x86-prototype.yml
+
   publish:
     needs:
       - linux
       - windows
+      - windows7
     runs-on: ubuntu-24.04
     steps:
       - name: Получить исходный код
@@ -186,15 +190,14 @@ jobs:
         run: |
           set -Eeuo pipefail
           cat > release-notes.md <<'EOF'
-          Версия 0.9.5 для РЕД ОС 8 x86_64 и Windows 10/11 x64.
+          Версия для РЕД ОС 8 x86_64, Windows 10/11 x64 и Windows 7 x86/x64.
 
-          - Добавлено отдельное подключение Windows TWAIN без PowerShell для сканеров, у которых WIA возвращает ошибку.
-          - На Kyocera ECOSYS MA4000x через USB проверены сканирование со стекла и пакет из пяти листов АПД. WIA-профили остаются прежними: TWAIN выбирается явно через «Подключить сканер…».
-          - TWAIN-сканирование работает в отдельном 32-битном процессе с ограничением 40 страниц и остановкой при зависании.
-          - Драйвер Kyocera не сообщает достоверно о наличии бумаги в АПД и может передать скан со стекла при пустом податчике. Перед запуском из АПД программа просит подтвердить наличие листов.
-          - Возможности сканирования РЕД ОС и предыдущие исправления Windows сохранены.
+          - Для обеих разрядностей Windows 7 предоставлен один 32-битный установщик. Он включает Python 3.8, GTK 3, WIA/TWAIN и PDFium для импорта PDF.
+          - Windows 7 требует обновления KB2533623 и .NET Framework 4 для сканирующих помощников. PowerShell-скрипты при запуске не используются.
+          - Возможности сканирования РЕД ОС и Windows 10/11 сохранены.
 
           `NAPS3-latest-Windows-x64.exe` — постоянная ссылка на установщик Windows.
+          `NAPS3-latest-Windows-x86.exe` — постоянная ссылка на единый установщик Windows 7 x86/x64.
           `naps3-latest.x86_64.rpm` — постоянная ссылка для установки в РЕД ОС.
           EOF
           gh release create "$GITHUB_REF_NAME" \

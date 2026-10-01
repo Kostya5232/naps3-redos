@@ -1,6 +1,7 @@
 param(
     [string]$ApplicationDirectory = "",
-    [string]$OutputDirectory = ""
+    [string]$OutputDirectory = "",
+    [ValidateSet("x64", "x86")][string]$Architecture = "x64"
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,6 +12,8 @@ if ([string]::IsNullOrWhiteSpace($ApplicationDirectory)) {
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $root "dist\windows\release"
 }
+$ApplicationDirectory = [IO.Path]::GetFullPath($ApplicationDirectory)
+$OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 
 $source = Get-Content -LiteralPath (Join-Path $root "naps3.py") -Raw
 $match = [regex]::Match($source, '(?m)^APP_VERSION = "([^"]+)"')
@@ -18,7 +21,10 @@ if (-not $match.Success) {
     throw "Не удалось определить версию NAPS3."
 }
 $version = $match.Groups[1].Value
-$fileVersion = "$version.0.0"
+if ($version -notmatch '^\d+\.\d+\.\d+$') {
+    throw "Версия должна состоять из трёх чисел: $version"
+}
+$fileVersion = "$version.0"
 
 if (-not (Test-Path -LiteralPath (Join-Path $ApplicationDirectory "NAPS3.exe") -PathType Leaf)) {
     throw "Не найдена собранная программа: $ApplicationDirectory"
@@ -35,13 +41,24 @@ if ($makensisCandidates.Count -eq 0) {
 $makensis = $makensisCandidates[0]
 
 $null = New-Item -ItemType Directory -Path $OutputDirectory -Force
-$installer = Join-Path $OutputDirectory "NAPS3-$version-Windows-x64.exe"
-$portable = Join-Path $OutputDirectory "NAPS3-$version-Windows-x64-portable.zip"
-$checksums = Join-Path $OutputDirectory "SHA256SUMS.windows"
+$installer = Join-Path $OutputDirectory "NAPS3-$version-Windows-$Architecture.exe"
+$portable = Join-Path $OutputDirectory "NAPS3-$version-Windows-$Architecture-portable.zip"
+$checksumName = if ($Architecture -eq "x86") { "SHA256SUMS.windows7-x86" } else { "SHA256SUMS.windows" }
+$checksums = Join-Path $OutputDirectory $checksumName
 
 Remove-Item -LiteralPath $installer, $portable, $checksums -Force -ErrorAction SilentlyContinue
 
-& $makensis "/INPUTCHARSET" "UTF8" "/DAPP_VERSION=$version" "/DAPP_FILE_VERSION=$fileVersion" "/DSOURCE_DIR=$ApplicationDirectory" "/DOUTPUT_FILE=$installer" (Join-Path $PSScriptRoot "installer.nsi")
+$defines = @(
+    "/INPUTCHARSET", "UTF8",
+    "/DAPP_VERSION=$version",
+    "/DAPP_FILE_VERSION=$fileVersion",
+    "/DSOURCE_DIR=$ApplicationDirectory",
+    "/DOUTPUT_FILE=$installer"
+)
+if ($Architecture -eq "x86") {
+    $defines += "/DWIN7_X86=1"
+}
+& $makensis @defines (Join-Path $PSScriptRoot "installer.nsi")
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $installer -PathType Leaf)) {
     throw "NSIS не создал установщик."
 }

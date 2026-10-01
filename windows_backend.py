@@ -263,7 +263,7 @@ def twain_device_profile(name: str) -> dict[str, object]:
         "ip": "",
         "saved_at": int(time.time()),
         "profile_source": "windows-twain",
-        "adf_capabilities_known": True,
+        "adf_capabilities_known": False,
         "adf_present": True,
         "adf_duplex_supported": False,
     }
@@ -288,6 +288,16 @@ def discover_twain_scanners(match_filter: str = "") -> list[dict[str, object]]:
 def probe_twain_device(name: str) -> bool:
     payload = run_twain_bridge("probe", name, timeout=10.0)
     return bool(isinstance(payload, dict) and payload.get("present"))
+
+
+def inspect_twain_device(name: str) -> dict[str, bool]:
+    """Read capabilities from the selected source, without changing scan settings."""
+    payload = run_twain_bridge("capabilities", name, timeout=20.0)
+    if not isinstance(payload, dict) or not all(
+        isinstance(payload.get(key), bool) for key in ("has_adf", "has_duplex")
+    ):
+        raise WindowsBackendError("TWAIN-драйвер вернул некорректные возможности сканера.")
+    return {"has_adf": payload["has_adf"], "has_duplex": payload["has_duplex"]}
 
 
 def build_twain_scan_command(

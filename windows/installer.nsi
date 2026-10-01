@@ -41,6 +41,18 @@ VIAddVersionKey /LANG=1049 "LegalCopyright" "MIT License"
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "Russian"
 
+!ifdef WIN7_X86
+Function .onInit
+  System::Call 'kernel32::GetModuleHandleW(w "kernel32.dll") p.r0'
+  System::Call 'kernel32::GetProcAddress(p r0, m "AddDllDirectory") p.r1'
+  IntCmp $1 0 missing_update ready ready
+  missing_update:
+    MessageBox MB_ICONSTOP "Для запуска NAPS3 на Windows 7 установите обновление KB2533623 и перезагрузите компьютер. Затем повторите установку."
+    Abort
+  ready:
+FunctionEnd
+!endif
+
 Section "NAPS3" MainSection
   SetOutPath "$INSTDIR"
   File /r "${SOURCE_DIR}\*"

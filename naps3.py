@@ -2,6 +2,13 @@
 """
 NAPS3 — графическое сканирование документов для РЕД ОС и Windows.
 
+Версия 0.9.6 (кандидат):
+- отдельная 32-битная сборка для Windows 7 x86/x64 на Python 3.8 и GTK 3;
+- резервный импорт PDF через PDFium для этой сборки;
+- TWAIN-страницы показываются по мере получения; выбор USB-драйвера вынесен в окно подключения;
+- одиночная страница со стекла доступна до завершения медленного закрытия TWAIN-драйвера;
+- стабильный выпуск ожидает проверки на обеих версиях Windows 7.
+
 Версия 0.9.5:
 - добавлено отдельное TWAIN-подключение Windows для сканеров с неисправным WIA;
 - подтверждено сканирование Kyocera ECOSYS MA4000x по USB со стекла и АПД;
@@ -97,6 +104,7 @@ from windows_backend import (
     discover_twain_scanners,
     discover_wia_scanners,
     find_runtime_executable,
+    inspect_twain_device,
     probe_twain_device,
     probe_wia_device,
     resource_path,
@@ -178,7 +186,7 @@ except ImportError as exc:
 
 APP_ID = "ru.redos.NAPS3"
 APP_NAME = "NAPS3"
-APP_VERSION = "0.9.5"
+APP_VERSION = "0.9.6"
 DEFAULT_MATCH = ""
 DEFAULT_SCANNER_NAME = "Сканер Windows" if IS_WINDOWS else "Сканер"
 DEFAULT_ESCL_URL = "http://127.0.0.1:60000/eSCL"
@@ -384,15 +392,19 @@ def staged_export_files(
                     pass
 
 
-@dataclass(slots=True)
+@dataclass
 class Page:
+    __slots__ = ("path", "label")
+
     path: Path
     label: str
 
 
-@dataclass(slots=True)
+@dataclass
 class EsclJobSnapshot:
     """State of one exact ScanJob reported inside ScannerStatus."""
+
+    __slots__ = ("uri", "state", "images_completed", "images_to_transfer", "age")
 
     uri: str
     state: str
@@ -1423,6 +1435,7 @@ def build_hpaio_profile(
 
 def discover_usb_scanners(
     match_filter: str = "",
+    windows_backend_choice: str = "auto",
 ) -> list[dict[str, object]]:
     """
     Find only scanners physically connected to this PC.
@@ -1434,7 +1447,11 @@ def discover_usb_scanners(
     if IS_WINDOWS:
         profiles: list[dict[str, object]] = []
         errors: list[str] = []
-        for discover in (discover_wia_scanners, discover_twain_scanners):
+        discoverers = {
+            "wia": (discover_wia_scanners,),
+            "twain": (discover_twain_scanners,),
+        }.get(windows_backend_choice, (discover_wia_scanners, discover_twain_scanners))
+        for discover in discoverers:
             try:
                 profiles.extend(discover(match_filter))
             except WindowsBackendError as exc:
@@ -2939,6 +2956,50 @@ class USBScannerDialog(Gtk.Dialog):
             return None
 
 
+class USBConnectionMethodDialog(Gtk.Dialog):
+    """Ask for a Windows USB driver only when the user connects a scanner."""
+
+    def __init__(self, parent: Gtk.Window, current_backend: str = "") -> None:
+        super().__init__(
+            title="Способ подключения USB-сканера",
+            transient_for=parent,
+            modal=True,
+        )
+        self.set_default_size(460, 220)
+        self.add_button("Отмена", Gtk.ResponseType.CANCEL)
+        self.add_button("Найти сканер", Gtk.ResponseType.OK)
+        self.set_default_response(Gtk.ResponseType.OK)
+
+        area = self.get_content_area()
+        area.set_spacing(10)
+        area.set_border_width(18)
+        title = Gtk.Label(label="Выберите способ подключения по USB")
+        title.set_xalign(0)
+        area.pack_start(title, False, False, 0)
+
+        self.methods: dict[str, Gtk.RadioButton] = {}
+        choices = (
+            ("auto", "Показать все доступные способы"),
+            ("wia", "WIA — системный драйвер Windows"),
+            ("twain", "TWAIN — драйвер производителя"),
+        )
+        first = None
+        for method, label in choices:
+            button = Gtk.RadioButton.new_with_label_from_widget(first, label)
+            if first is None:
+                first = button
+            area.pack_start(button, False, False, 0)
+            self.methods[method] = button
+        selected = current_backend if current_backend in self.methods else "auto"
+        self.methods[selected].set_active(True)
+        self.show_all()
+
+    def get_backend(self) -> str:
+        return next(
+            method for method, button in self.methods.items() if button.get_active()
+        )
+
+
 class NetworkScannerDialog(Gtk.Dialog):
     def __init__(
         self,
@@ -3116,6 +3177,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self.current_escl_response: Optional[object] = None
         self.is_busy = False
         self.cancel_requested = False
+        self.active_scan_dir: Optional[Path] = None
+        self._scan_streamed_pages = 0
+        self._scan_streaming_enabled = False
+        self._twain_cleanup_pending = False
+        self._twain_cleanup_process: Optional[subprocess.Popen] = None
         self._profile_probe_token: Optional[object] = None
         self.scan_sequence = 0
         self._preview_failures: set[Path] = set()
@@ -3783,9 +3849,10 @@ class MainWindow(Gtk.ApplicationWindow):
         self.busy_widgets.append(refresh_button)
 
         usb_button = toolbar_button(
-            "Подключить сканер…",
+            "Подключить сканер по USB…" if IS_WINDOWS else "Подключить сканер…",
             "drive-removable-media-symbolic",
-            "Найти локальные сканеры через ipp-usb и SANE",
+            "Выбрать WIA или TWAIN и найти USB-сканер"
+            if IS_WINDOWS else "Найти локальные сканеры через ipp-usb и SANE",
             lambda _button: self.connect_usb_scanner(),
         )
         usb_button.get_style_context().add_class(
@@ -4217,14 +4284,17 @@ class MainWindow(Gtk.ApplicationWindow):
         options: list[tuple[str, str]] = []
         if not known or has_adf:
             options.append(("ADF", "Автоподатчик"))
-            if known and not supports_duplex:
+            is_twain = profile.get("backend") == "twain"
+            if is_twain and (supports_duplex or not known):
+                options.append(("ADF Duplex", "Автоподатчик, две стороны (TWAIN)"))
+            if is_twain or (known and not supports_duplex):
                 options.append(
                     (
                         "ADF Manual Duplex",
                         "Автоподатчик, ручной дуплекс",
                     )
                 )
-            else:
+            elif not is_twain:
                 options.append(
                     (
                         "ADF Duplex",
@@ -4584,7 +4654,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._profile_probe_token = probe_token
         self.set_busy(True, "Проверка сохранённого сканера…")
 
-        def ready(error: str) -> bool:
+        def ready(error: str, checked_profile: dict[str, object]) -> bool:
             # A delayed startup probe must not replace a subsequent manual
             # selection or change the status of a scan already in progress.
             if self._profile_probe_token is not probe_token:
@@ -4594,11 +4664,12 @@ class MainWindow(Gtk.ApplicationWindow):
             if self.scanner_profile != profile:
                 return False
             return self._saved_profile_probe_ready(
-                {} if error else profile, error, False
+                {} if error else checked_profile, error, False
             )
 
         def worker() -> None:
             try:
+                checked_profile = dict(profile)
                 # Probe only the saved endpoint. General discovery can prefer
                 # another MFP while the selected one is asleep or disconnected.
                 url = profile_url(profile)
@@ -4614,6 +4685,20 @@ class MainWindow(Gtk.ApplicationWindow):
                         raise Naps3Error(
                             "Выбранный TWAIN-источник больше не зарегистрирован "
                             "в Windows. Проверьте драйвер или выберите сканер заново."
+                        )
+                    try:
+                        capabilities = inspect_twain_device(device_id)
+                    except WindowsBackendError as exc:
+                        checked_profile["adf_capabilities_known"] = False
+                        append_scan_log(
+                            "Saved TWAIN capabilities unavailable: "
+                            f"{compact_details(str(exc), 400)}"
+                        )
+                    else:
+                        checked_profile.update(
+                            adf_capabilities_known=True,
+                            adf_present=capabilities["has_adf"],
+                            adf_duplex_supported=capabilities["has_duplex"],
                         )
                 elif url:
                     if not probe_escl_url(url):
@@ -4643,11 +4728,12 @@ class MainWindow(Gtk.ApplicationWindow):
                         "В сохранённом профиле нет адреса сканера. "
                         "Выберите нужное устройство заново."
                     )
-                GLib.idle_add(ready, "")
+                GLib.idle_add(ready, "", checked_profile)
             except Exception as exc:  # noqa: BLE001
                 GLib.idle_add(
                     ready,
                     friendly_general_error(exc, "проверить выбранный сканер"),
+                    profile,
                 )
 
         threading.Thread(target=worker, daemon=True).start()
@@ -4735,7 +4821,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.set_status(status)
 
     def refresh_device(self) -> None:
-        if self.is_busy:
+        if self.is_busy or getattr(self, "_twain_cleanup_pending", False):
             return
 
         self.set_busy(True, "Поиск USB-сканера…")
@@ -4797,11 +4883,20 @@ class MainWindow(Gtk.ApplicationWindow):
         return False
 
     def connect_usb_scanner(self) -> None:
-        if self.is_busy:
+        if self.is_busy or getattr(self, "_twain_cleanup_pending", False):
             return
+        backend_choice = "auto"
+        if IS_WINDOWS:
+            current_backend = str((self.scanner_profile or {}).get("backend") or "")
+            dialog = USBConnectionMethodDialog(self, current_backend)
+            response = dialog.run()
+            backend_choice = dialog.get_backend()
+            dialog.destroy()
+            if response != Gtk.ResponseType.OK:
+                return
         self.set_busy(
             True,
-            "Поиск сканеров Windows WIA и TWAIN…"
+            f"Поиск сканеров Windows ({backend_choice.upper() if backend_choice != 'auto' else 'WIA и TWAIN'})…"
             if IS_WINDOWS
             else "Поиск локальных сканеров…",
         )
@@ -4815,10 +4910,21 @@ class MainWindow(Gtk.ApplicationWindow):
             ),
         )
         match_filter = self.match_entry.get_text().strip()
+        if (
+            IS_WINDOWS
+            and backend_choice in {"wia", "twain"}
+            and self.scanner_profile
+            and self.scanner_profile.get("backend") != backend_choice
+            and match_filter == profile_name(self.scanner_profile)
+        ):
+            # A saved TWAIN name often differs from its WIA registration.
+            # Clear only the app-filled exact name when switching drivers.
+            self.match_entry.set_text("")
+            match_filter = ""
 
         def worker() -> None:
             try:
-                profiles = discover_usb_scanners(match_filter)
+                profiles = discover_usb_scanners(match_filter, backend_choice)
                 GLib.idle_add(self._usb_scanners_ready, profiles, "")
             except Exception as exc:  # noqa: BLE001
                 GLib.idle_add(
@@ -4897,6 +5003,47 @@ class MainWindow(Gtk.ApplicationWindow):
                 )
                 return False
 
+        if profile.get("backend") == "twain":
+            self.set_busy(True, "Проверка возможностей выбранного TWAIN-сканера…")
+
+            def inspect_worker() -> None:
+                try:
+                    capabilities = inspect_twain_device(str(profile["device_id"]))
+                    error = ""
+                except (WindowsBackendError, OSError) as exc:
+                    capabilities = {}
+                    error = str(exc)
+                GLib.idle_add(
+                    self._twain_profile_ready, profile, capabilities, error
+                )
+
+            threading.Thread(target=inspect_worker, daemon=True).start()
+            return False
+
+        return self._activate_usb_profile(profile)
+
+    def _twain_profile_ready(
+        self,
+        profile: dict[str, object],
+        capabilities: dict[str, bool],
+        error: str,
+    ) -> bool:
+        self.set_busy(False)
+        if capabilities:
+            profile = {
+                **profile,
+                "adf_capabilities_known": True,
+                "adf_present": capabilities["has_adf"],
+                "adf_duplex_supported": capabilities["has_duplex"],
+            }
+        elif error:
+            profile = {**profile, "adf_capabilities_known": False}
+            append_scan_log(
+                f"TWAIN capabilities unavailable: {compact_details(error, 400)}"
+            )
+        return self._activate_usb_profile(profile)
+
+    def _activate_usb_profile(self, profile: dict[str, object]) -> bool:
         self.scanner_profile = profile
         self.match_entry.set_text(profile_name(profile))
         self._set_device_profile(
@@ -4930,7 +5077,7 @@ class MainWindow(Gtk.ApplicationWindow):
         return False
 
     def connect_network_scanner(self) -> None:
-        if self.is_busy:
+        if self.is_busy or getattr(self, "_twain_cleanup_pending", False):
             return
         self.set_busy(True, "Поиск сетевых eSCL-сканеров…")
         self._set_device_status(
@@ -5031,6 +5178,9 @@ class MainWindow(Gtk.ApplicationWindow):
     def start_scan(self) -> None:
         if self.is_busy:
             return
+        if getattr(self, "_twain_cleanup_pending", False):
+            self.set_status("Страница готова; TWAIN ещё освобождает сканер…")
+            return
 
         if not IS_WINDOWS and shutil.which("scanimage") is None:
             self.show_error(
@@ -5124,7 +5274,11 @@ class MainWindow(Gtk.ApplicationWindow):
             if (
                 source == "ADF Duplex"
                 and capabilities_known
-                and not duplex_resolutions
+                and not (
+                    bool(cached_profile.get("adf_duplex_supported"))
+                    if cached_profile.get("backend") in {"wia", "twain"}
+                    else duplex_resolutions
+                )
             ):
                 self.source_combo.set_active_id("ADF Manual Duplex")
                 self._save_ui_settings()
@@ -5171,6 +5325,12 @@ class MainWindow(Gtk.ApplicationWindow):
         scan_token = f"{time.strftime('%Y%m%d-%H%M%S')}-{self.scan_sequence:03d}-{uuid.uuid4().hex[:6]}"
         scan_dir = self.session_dir / f"scan-{scan_token}"
         scan_dir.mkdir(parents=True, exist_ok=False)
+        self.active_scan_dir = scan_dir
+        self._scan_streamed_pages = 0
+        self._scan_streaming_enabled = bool(
+            cached_profile and cached_profile.get("backend") == "twain"
+            and source != "ADF Manual Duplex"
+        )
         append_scan_log(
             "START "
             f"token={scan_token} source={source} mode={mode} dpi={dpi} "
@@ -5198,6 +5358,7 @@ class MainWindow(Gtk.ApplicationWindow):
                         paper,
                         cached_profile,
                         stream_adf,
+                        publish_pages=False,
                     )
                     append_scan_log(
                         f"Manual duplex front pass complete pages={len(front_files)}"
@@ -5227,6 +5388,7 @@ class MainWindow(Gtk.ApplicationWindow):
                         paper,
                         profile,
                         stream_adf,
+                        publish_pages=False,
                     )
                     workers = min(3, max(1, len(back_files)))
                     with concurrent.futures.ThreadPoolExecutor(
@@ -5325,6 +5487,7 @@ class MainWindow(Gtk.ApplicationWindow):
         dpi: int,
         paper: str,
         backend: str = "wia",
+        publish_pages: bool = True,
     ) -> tuple[list[Path], str, dict[str, object]]:
         """Scan the exact selected Windows source through its isolated bridge."""
         is_twain = backend == "twain"
@@ -5335,6 +5498,8 @@ class MainWindow(Gtk.ApplicationWindow):
         for pattern in ("page-*", "raw-*"):
             for old_file in scan_dir.glob(pattern):
                 old_file.unlink(missing_ok=True)
+        completion_marker = scan_dir / "twain-complete.json"
+        completion_marker.unlink(missing_ok=True)
 
         build_command = build_twain_scan_command if is_twain else build_wia_scan_command
         command = build_command(
@@ -5378,27 +5543,107 @@ class MainWindow(Gtk.ApplicationWindow):
             return [], f"Не удалось запустить Windows {backend.upper()}: {exc}", profile
 
         self.current_process = process
+        bridge_started = time.monotonic()
+        first_raw_after = None
+        first_preview_after = None
+        files: list[Path] = []
+        conversion_started = bridge_started
+        bridge_seconds = 0.0
+        early_flatbed = False
         try:
             if is_twain:
                 started = time.monotonic()
                 last_progress = started
                 seen_pages = 0
                 stalled = False
-                while process.poll() is None:
-                    page_count = len(list(scan_dir.glob("raw-*.bmp")))
-                    if page_count > seen_pages:
-                        seen_pages = page_count
-                        last_progress = time.monotonic()
-                    now = time.monotonic()
-                    if (
-                        now - last_progress > (40 if source != "Flatbed" else 125)
-                        or now - started > 310
-                    ):
-                        process.kill()
-                        stalled = True
-                        break
-                    time.sleep(0.2)
-                stdout, stderr = process.communicate()
+                queued: list[tuple[Path, concurrent.futures.Future[Path]]] = []
+                queued_raw: set[Path] = set()
+                completed = 0
+
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1 if dpi >= 600 else 2
+                ) as executor:
+                    def collect_pages(wait: bool = False) -> None:
+                        nonlocal completed, first_raw_after, first_preview_after
+                        for raw in sorted(scan_dir.glob("raw-*.bmp")):
+                            if (
+                                raw in queued_raw
+                                or not raw.is_file()
+                                or raw.stat().st_size == 0
+                            ):
+                                continue
+                            queued_raw.add(raw)
+                            if first_raw_after is None:
+                                first_raw_after = time.monotonic() - bridge_started
+                                append_scan_log(
+                                    f"TWAIN first raw page after {first_raw_after:.2f}s"
+                                )
+                            target = scan_dir / f"page-{raw.stem[4:]}.png"
+                            queued.append((
+                                raw,
+                                executor.submit(
+                                    self._convert_stream_document,
+                                    raw,
+                                    target,
+                                    mode == "Lineart",
+                                ),
+                            ))
+                        while completed < len(queued):
+                            future = queued[completed][1]
+                            if not wait and not future.done():
+                                break
+                            page = future.result()
+                            files.append(page)
+                            completed += 1
+                            if first_preview_after is None:
+                                first_preview_after = time.monotonic() - bridge_started
+                                append_scan_log(
+                                    f"TWAIN first preview ready after {first_preview_after:.2f}s"
+                                )
+                            if publish_pages and not self.cancel_requested:
+                                GLib.idle_add(self._scan_page_ready, page, scan_dir)
+
+                    while process.poll() is None:
+                        collect_pages()
+                        if source == "Flatbed" and len(files) == 1 and completion_marker.is_file():
+                            try:
+                                completed_job = json.loads(
+                                    completion_marker.read_text(encoding="utf-8")
+                                )
+                            except (OSError, ValueError):
+                                completed_job = {}
+                            if isinstance(completed_job, dict) and completed_job.get("pages") == 1:
+                                early_flatbed = True
+                                break
+                        if len(queued) > seen_pages:
+                            seen_pages = len(queued)
+                            last_progress = time.monotonic()
+                        now = time.monotonic()
+                        if (
+                            now - last_progress > (100 if source != "Flatbed" else 125)
+                            or now - started > 310
+                        ):
+                            process.kill()
+                            stalled = True
+                            break
+                        time.sleep(0.2)
+                    if early_flatbed:
+                        bridge_seconds = time.monotonic() - bridge_started
+                        stdout, stderr = "", ""
+                        self._twain_cleanup_pending = True
+                        self._twain_cleanup_process = process
+                        threading.Thread(
+                            target=self._finish_twain_cleanup,
+                            args=(process, bridge_started),
+                            daemon=True,
+                        ).start()
+                        append_scan_log(
+                            f"TWAIN flatbed complete before driver exit after {bridge_seconds:.2f}s"
+                        )
+                    else:
+                        stdout, stderr = process.communicate()
+                        bridge_seconds = time.monotonic() - bridge_started
+                    collect_pages(wait=True)
                 if stalled:
                     append_scan_log(
                         f"TWAIN watchdog stopped unresponsive driver; pages={seen_pages}"
@@ -5409,6 +5654,11 @@ class MainWindow(Gtk.ApplicationWindow):
                         return [], "TWAIN-сканер не ответил вовремя. Задание остановлено.", profile
             else:
                 stdout, stderr = process.communicate()
+                bridge_seconds = time.monotonic() - bridge_started
+        except Exception:
+            if not early_flatbed and process.poll() is None:
+                terminate_subprocess(process)
+            raise
         finally:
             if self.current_process is process:
                 self.current_process = None
@@ -5428,19 +5678,18 @@ class MainWindow(Gtk.ApplicationWindow):
             append_scan_log(f"{backend.upper()} scan failed: {compact_details(error, 600)}")
             return [], error, profile
 
-        GLib.idle_add(
-            self.set_status,
-            f"Получено страниц: {len(raw_files)}. Подготовка предпросмотра…",
-        )
-        targets = [
-            scan_dir / f"page-{index:04d}.png"
-            for index in range(1, len(raw_files) + 1)
-        ]
-        workers = 1 if dpi >= 600 else min(2, max(1, len(raw_files)))
-        try:
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=workers
-            ) as executor:
+        if not is_twain:
+            GLib.idle_add(
+                self.set_status,
+                f"Получено страниц: {len(raw_files)}. Подготовка предпросмотра…",
+            )
+            targets = [
+                scan_dir / f"page-{index:04d}.png"
+                for index in range(1, len(raw_files) + 1)
+            ]
+            workers = 1 if dpi >= 600 else min(2, max(1, len(raw_files)))
+            conversion_started = time.monotonic()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = [
                     executor.submit(
                         self._convert_stream_document,
@@ -5451,20 +5700,60 @@ class MainWindow(Gtk.ApplicationWindow):
                     for raw, target in zip(raw_files, targets)
                 ]
                 files = [future.result() for future in futures]
-        finally:
-            for raw_file in raw_files:
-                raw_file.unlink(missing_ok=True)
+        for raw_file in raw_files:
+            raw_file.unlink(missing_ok=True)
 
-        if process.returncode != 0:
+        if process.returncode not in (None, 0):
             append_scan_log(
                 f"{backend.upper()} preserved partial pages after backend error: "
                 f"{compact_details((twain_error_text if is_twain else bridge_error_text)(stdout, stderr), 600)}"
             )
         append_scan_log(f"{backend.upper()} scan complete pages={len(files)}")
+        append_scan_log(
+            f"{backend.upper()} timing bridge={bridge_seconds:.2f}s "
+            f"first_raw={first_raw_after if first_raw_after is not None else 'unknown'}s "
+            f"first_preview={first_preview_after if first_preview_after is not None else 'unknown'}s "
+            f"conversion_span={time.monotonic() - conversion_started:.2f}s "
+            f"cleanup_pending={early_flatbed}"
+        )
         updated = dict(profile)
         updated["scan_engine"] = "windows-twain-v1" if is_twain else "windows-wia-v1"
         updated["saved_at"] = int(time.time())
         return files, "", updated
+
+    def _finish_twain_cleanup(
+        self,
+        process: subprocess.Popen,
+        scan_started: float,
+    ) -> None:
+        """Release a completed flatbed scan without holding up its document."""
+        timed_out = False
+        try:
+            try:
+                _stdout, stderr = process.communicate(timeout=15)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                terminate_subprocess(process)
+                _stdout, stderr = process.communicate(timeout=5)
+            append_scan_log(
+                "TWAIN flatbed cleanup "
+                f"rc={process.returncode} timeout={timed_out} "
+                f"elapsed={time.monotonic() - scan_started:.2f}s "
+                f"details={compact_details(stderr, 200)}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            append_scan_log(f"TWAIN flatbed cleanup failed: {compact_details(str(exc), 200)}")
+        finally:
+            GLib.idle_add(self._twain_cleanup_ready, process)
+
+    def _twain_cleanup_ready(self, process: subprocess.Popen) -> bool:
+        if self._twain_cleanup_process is process:
+            self._twain_cleanup_process = None
+            self._twain_cleanup_pending = False
+            self.scan_button.set_sensitive(not self.is_busy)
+            if not self.is_busy and "TWAIN освобождает" in self.status_label.get_text():
+                self.set_status("Сканер готов к следующему сканированию")
+        return False
 
     def _scan_windows_twain(
         self,
@@ -5474,9 +5763,11 @@ class MainWindow(Gtk.ApplicationWindow):
         mode: str,
         dpi: int,
         paper: str,
+        publish_pages: bool = True,
     ) -> tuple[list[Path], str, dict[str, object]]:
         return self._scan_windows_wia(
-            scan_dir, profile, source, mode, dpi, paper, backend="twain"
+            scan_dir, profile, source, mode, dpi, paper,
+            backend="twain", publish_pages=publish_pages,
         )
 
     def _scan_once(
@@ -6235,6 +6526,7 @@ class MainWindow(Gtk.ApplicationWindow):
         paper: str,
         cached_profile: Optional[dict[str, object]],
         stream_adf: bool,
+        publish_pages: bool = True,
     ) -> tuple[list[Path], dict[str, object]]:
         if self.cancel_requested:
             raise Naps3Error("Сканирование отменено пользователем.")
@@ -6294,7 +6586,8 @@ class MainWindow(Gtk.ApplicationWindow):
 
         if profile.get("backend") == "twain":
             files, error, profile = self._scan_windows_twain(
-                scan_dir, profile, source, mode, dpi, paper
+                scan_dir, profile, source, mode, dpi, paper,
+                publish_pages=publish_pages,
             )
             if files:
                 return files, profile
@@ -6492,6 +6785,24 @@ class MainWindow(Gtk.ApplicationWindow):
             friendly_scan_error(error, self.cancel_requested)
         )
 
+    def _scan_page_ready(self, page: Path, scan_dir: Path) -> bool:
+        """Show a complete TWAIN page while the scanner finishes the job."""
+        if (
+            getattr(self, "active_scan_dir", None) != scan_dir
+            or self.cancel_requested
+            or not page.is_file()
+            or page in {item.path for item in self.pages}
+        ):
+            return False
+        self.add_pages([page])
+        self._scan_streamed_pages += 1
+        append_scan_log(f"READY streamed page={page.name} project_pages={len(self.pages)}")
+        self.set_status(
+            f"Получено страниц: {self._scan_streamed_pages}. "
+            "Сканирование продолжается…"
+        )
+        return False
+
     def _scan_ready(
         self,
         files: list[Path],
@@ -6499,20 +6810,50 @@ class MainWindow(Gtk.ApplicationWindow):
         profile: dict[str, object],
         warning: str = "",
     ) -> bool:
+        scan_dir = getattr(self, "active_scan_dir", None)
         self.set_busy(False)
+        if hasattr(self, "active_scan_dir"):
+            self.active_scan_dir = None
         self.current_process = None
         self.current_escl_job_url = None
         self.current_escl_response = None
 
+        if (
+            (self.cancel_requested or error)
+            and getattr(self, "_scan_streaming_enabled", False)
+            and scan_dir is not None
+        ):
+            # PNGs are published atomically. Keep any complete pages even if
+            # cancellation raced their GTK callbacks or a later page failed.
+            existing = {page.path for page in self.pages}
+            completed = [
+                page for page in sorted(scan_dir.glob("page-*.png"))
+                if page not in existing
+            ]
+            if completed:
+                self.add_pages(completed)
+                self._scan_streamed_pages += len(completed)
+
         if self.cancel_requested:
             self.cancel_requested = False
-            append_scan_log("READY cancelled; partial scan discarded")
-            self.set_status("Сканирование отменено")
+            partial = getattr(self, "_scan_streamed_pages", 0)
+            append_scan_log(f"READY cancelled; project_pages_kept={partial}")
+            self.set_status(
+                "Сканирование отменено; полученные страницы сохранены в проекте"
+                if partial else "Сканирование отменено"
+            )
             return False
 
         if error:
-            self.set_status("Сканирование не выполнено")
-            self.show_error("Ошибка сканирования", error)
+            partial = getattr(self, "_scan_streamed_pages", 0)
+            self.set_status(
+                "Сканирование прервано; полученные страницы сохранены в проекте"
+                if partial else "Сканирование не выполнено"
+            )
+            self.show_error(
+                "Ошибка сканирования",
+                error + ("\n\nУже полученные страницы остались в проекте." if partial else ""),
+            )
             return False
 
         if profile:
@@ -6523,14 +6864,22 @@ class MainWindow(Gtk.ApplicationWindow):
             except OSError:
                 pass
 
-        self.add_pages(files)
+        existing = {page.path for page in self.pages}
+        new_files = [path for path in files if path not in existing]
+        if new_files:
+            self.add_pages(new_files)
         append_scan_log(
             f"READY added_pages={len(files)} project_pages={len(self.pages)}"
         )
-        self.set_status(
-            f"Сканирование завершено. Добавлено страниц: {len(files)}. "
-            "Профиль устройства сохранён для следующего запуска."
-        )
+        if getattr(self, "_twain_cleanup_pending", False):
+            self.set_status(
+                "Страница со стекла готова. Можно сохранить; TWAIN освобождает сканер…"
+            )
+        else:
+            self.set_status(
+                f"Сканирование завершено. Добавлено страниц: {len(files)}. "
+                "Профиль устройства сохранён для следующего запуска."
+            )
         if warning:
             self.show_info("Ручной дуплекс", warning)
         return False
@@ -6902,11 +7251,14 @@ class MainWindow(Gtk.ApplicationWindow):
             return
 
         pdf_converter = find_runtime_executable("pdftoppm")
-        if pdf_converter is None:
+        from pdf_import import pdfium_available, render_pdf_to_png
+
+        use_pdfium = IS_WINDOWS and pdf_converter is None and pdfium_available()
+        if pdf_converter is None and not use_pdfium:
             self.show_error(
                 "Импорт PDF недоступен",
                 (
-                    "Переустановите NAPS3 для Windows: в пакете отсутствует pdftoppm."
+                    "Переустановите NAPS3 для Windows: в пакете отсутствует компонент импорта PDF."
                     if IS_WINDOWS
                     else "Не установлен компонент pdftoppm. Установите пакет poppler-utils."
                 ),
@@ -6951,30 +7303,34 @@ class MainWindow(Gtk.ApplicationWindow):
 
         def worker() -> None:
             try:
-                result = subprocess.run(
-                    [
-                        pdf_converter,
-                        "-png",
-                        "-r",
-                        "160",
-                        filename,
-                        str(prefix),
-                    ],
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    timeout=300,
-                    check=False,
-                    env=converter_env,
-                )
-                files = sorted(import_dir.glob("page-*.png"))
+                if use_pdfium:
+                    files = render_pdf_to_png(Path(filename), prefix)
+                    details = ""
+                else:
+                    result = subprocess.run(
+                        [
+                            pdf_converter,
+                            "-png",
+                            "-r",
+                            "160",
+                            filename,
+                            str(prefix),
+                        ],
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        timeout=300,
+                        check=False,
+                        env=converter_env,
+                    )
+                    files = sorted(import_dir.glob("page-*.png"))
+                    details = compact_details(result.stderr)
                 if not files:
                     raise Naps3Error(
                         "PDF не удалось преобразовать в изображения.\n\n"
-                        f"Технические сведения: "
-                        f"{compact_details(result.stderr)}"
+                        f"Технические сведения: {details}"
                     )
                 GLib.idle_add(self._import_pdf_ready, files, "")
             except Exception as exc:  # noqa: BLE001
@@ -7489,7 +7845,7 @@ class MainWindow(Gtk.ApplicationWindow):
         cancellable: bool = False,
     ) -> None:
         self.is_busy = busy
-        self.scan_button.set_sensitive(not busy)
+        self.scan_button.set_sensitive(not busy and not self._twain_cleanup_pending)
         self.cancel_button.set_visible(busy and cancellable)
 
         if busy:
@@ -7555,6 +7911,9 @@ class MainWindow(Gtk.ApplicationWindow):
                 return True
 
         self.cancel_operation()
+        cleanup_process = getattr(self, "_twain_cleanup_process", None)
+        if cleanup_process is not None:
+            terminate_subprocess(cleanup_process)
 
         try:
             self._save_ui_settings()
@@ -7617,7 +7976,10 @@ def check_runtime(*, strict_windows: bool = False) -> Optional[str]:
         except WindowsBackendError as exc:
             missing.append(f"компонент Windows WIA ({exc})")
         if find_runtime_executable("pdftoppm") is None:
-            missing.append("pdftoppm для импорта PDF")
+            from pdf_import import pdfium_available
+
+            if not pdfium_available():
+                missing.append("pdftoppm или PDFium для импорта PDF")
     elif shutil.which("scanimage") is None:
         missing.append("scanimage из пакета sane-backends")
 
