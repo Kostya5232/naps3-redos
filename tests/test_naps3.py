@@ -883,6 +883,10 @@ class TwainProgressTests(unittest.TestCase):
             ):
                 worker = threading.Thread(target=run_scan, daemon=True)
                 worker.start()
+                deadline = time.monotonic() + 2.0
+                while owner.current_process is not process and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertIs(owner.current_process, process)
                 partial = scan_dir / "raw-0001.bmp.part"
                 with Image.new("RGB", (20, 20), "white") as image:
                     image.save(partial, format="BMP")
