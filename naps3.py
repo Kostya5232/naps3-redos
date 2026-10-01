@@ -7911,8 +7911,9 @@ class MainWindow(Gtk.ApplicationWindow):
                 return True
 
         self.cancel_operation()
-        if self._twain_cleanup_process is not None:
-            terminate_subprocess(self._twain_cleanup_process)
+        cleanup_process = getattr(self, "_twain_cleanup_process", None)
+        if cleanup_process is not None:
+            terminate_subprocess(cleanup_process)
 
         try:
             self._save_ui_settings()
