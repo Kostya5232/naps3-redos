@@ -48,6 +48,14 @@ jobs:
           if ((git -C C:\gtk-build\github\gvsbuild rev-parse HEAD).Trim() -ne 'beeef2c42f35d8872412663589effc11851555c6') {
             throw 'Unexpected gvsbuild commit'
           }
+          # SourceForge currently serves an empty libjpeg-turbo archive to CI.
+          # The official GitHub release asset has the same pinned SHA-256.
+          $recipe = 'C:\gtk-build\github\gvsbuild\gvsbuild\projects\libjpeg_turbo.py'
+          $source = [IO.File]::ReadAllText($recipe)
+          $oldUrl = 'https://sourceforge.net/projects/libjpeg-turbo/files/{version}/libjpeg-turbo-{version}.tar.gz'
+          $newUrl = 'https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/{version}/libjpeg-turbo-{version}.tar.gz'
+          if (-not $source.Contains($oldUrl)) { throw 'Unexpected libjpeg-turbo recipe' }
+          [IO.File]::WriteAllText($recipe, $source.Replace($oldUrl, $newUrl))
           # libpng 1.6.38's genchk template incorrectly finds checksym.awk in
           # the CMake build directory. gvsbuild copies patch files over sources.
           New-Item -ItemType Directory -Path C:\gtk-build\github\gvsbuild\gvsbuild\patches\libpng\scripts -Force | Out-Null
