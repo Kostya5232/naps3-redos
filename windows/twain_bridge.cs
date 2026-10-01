@@ -28,9 +28,9 @@ internal static class TwainBridge
         DataSource source = null;
         try
         {
-            if (args.Length == 0 || (args[0] != "list" && args[0] != "probe" && args[0] != "scan"))
+            if (args.Length == 0 || (args[0] != "list" && args[0] != "probe" && args[0] != "capabilities" && args[0] != "scan"))
                 throw new ArgumentException("Неизвестное действие TWAIN-моста.");
-            if (args[0] == "probe" && args.Length != 2)
+            if ((args[0] == "probe" || args[0] == "capabilities") && args.Length != 2)
                 throw new ArgumentException("Укажите название TWAIN-источника.");
             if (args[0] == "scan" && args.Length != 6)
                 throw new ArgumentException("Для сканирования нужны источник, папка, режим, цвет и DPI.");
@@ -78,16 +78,24 @@ internal static class TwainBridge
             if (source.Open() != ReturnCode.Success)
                 throw new InvalidOperationException("Не удалось открыть выбранный TWAIN-сканер.");
 
+            if (args[0] == "capabilities")
+            {
+                WriteJson("{\"has_adf\":" + (source.Capabilities.CapFeederEnabled.IsSupported ? "true" : "false") +
+                    ",\"has_duplex\":" + (HasDuplex(source) ? "true" : "false") + "}");
+                return 0;
+            }
+
             _outputDirectory = Path.GetFullPath(args[2]);
             Directory.CreateDirectory(_outputDirectory);
             bool feeder = !String.Equals(args[3], "Flatbed", StringComparison.Ordinal);
-            if (String.Equals(args[3], "ADF Duplex", StringComparison.Ordinal))
-                throw new InvalidOperationException("Двусторонний АПД через TWAIN пока не поддерживается.");
+            bool duplex = String.Equals(args[3], "ADF Duplex", StringComparison.Ordinal);
             var feederCap = source.Capabilities.CapFeederEnabled;
             // Set this explicitly even if GetCurrent says True: the Kyocera
             // driver reports stale values for feeder state and paper sensor.
             if (feeder && (!feederCap.CanSet || feederCap.SetValue(BoolType.True) != ReturnCode.Success))
                 throw new InvalidOperationException("TWAIN-драйвер не включил автоподатчик.");
+            if (feeder && source.Capabilities.CapAutoFeed.CanSet)
+                source.Capabilities.CapAutoFeed.SetValue(BoolType.True);
             if (!feeder && feederCap.CanGetCurrent && feederCap.GetCurrent() != BoolType.False)
             {
                 if (!feederCap.CanSet || feederCap.SetValue(BoolType.False) != ReturnCode.Success)
@@ -99,8 +107,17 @@ internal static class TwainBridge
                     // correctly scans the flatbed.
                 }
             }
+            var duplexCap = source.Capabilities.CapDuplexEnabled;
+            if (duplex)
+            {
+                if (!HasDuplex(source) || !duplexCap.CanSet ||
+                    duplexCap.SetValue(BoolType.True) != ReturnCode.Success)
+                    throw new InvalidOperationException("TWAIN-драйвер не включил аппаратное двустороннее сканирование.");
+            }
+            else if (duplexCap.CanSet)
+                duplexCap.SetValue(BoolType.False);
             if (source.Capabilities.CapXferCount.CanSet)
-                source.Capabilities.CapXferCount.SetValue((short)(feeder ? MaximumPages : 1));
+                source.Capabilities.CapXferCount.SetValue(feeder ? -1 : 1);
 
             PixelType pixel = args[4] == "Gray" ? PixelType.Gray :
                 args[4] == "Lineart" ? PixelType.BlackWhite : PixelType.RGB;
@@ -117,11 +134,16 @@ internal static class TwainBridge
 
             if (source.Enable(SourceEnableMode.NoUI, false, IntPtr.Zero) != ReturnCode.Success)
                 throw new InvalidOperationException("TWAIN-драйвер не начал сканирование.");
-            int waitMs = feeder ? 300000 : 120000;
-            if (feeder && WaitHandle.WaitAny(new WaitHandle[] { PageReceived, Finished }, 25000) == WaitHandle.WaitTimeout)
-                throw new TimeoutException("Автоподатчик не передал первую страницу за 25 секунд. Проверьте бумагу и готовность МФУ.");
-            if (!Finished.WaitOne(waitMs))
+            int firstPageWait = feeder ? 90000 : 120000;
+            int firstEvent = WaitHandle.WaitAny(new WaitHandle[] { PageReceived, Finished }, firstPageWait);
+            if (firstEvent == WaitHandle.WaitTimeout)
+                throw new TimeoutException(feeder ?
+                    "Автоподатчик не передал первую страницу за 90 секунд. Проверьте готовность МФУ." :
+                    "TWAIN-сканер не передал страницу за отведённое время.");
+            if (feeder && !Finished.WaitOne(300000))
                 throw new TimeoutException("TWAIN-сканер не завершил передачу за отведённое время.");
+            if (!feeder && firstEvent == 0)
+                Finished.WaitOne(1500); // A single flatbed page is complete; do not wait for a late close event.
             if (_error != null)
                 throw new InvalidOperationException(_error);
             if (_pages == 0)
@@ -187,6 +209,20 @@ internal static class TwainBridge
         var cap = source.Capabilities.ICapPixelType;
         if (!cap.CanSet || cap.SetValue(requested) != ReturnCode.Success)
             throw new InvalidOperationException("TWAIN-драйвер отклонил цветовой режим " + requested + ".");
+    }
+
+    private static bool HasDuplex(DataSource source)
+    {
+        try
+        {
+            var duplex = source.Capabilities.CapDuplex;
+            return duplex.CanGetCurrent && duplex.GetCurrent() != Duplex.None &&
+                source.Capabilities.CapDuplexEnabled.CanSet;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
     private static int SelectResolution(DataSource source, int requested)

@@ -246,6 +246,57 @@ class LocalScannerDiscoveryTests(unittest.TestCase):
         self.assertIsNone(naps3.choose_usb_profile(profiles, "MA4000x"))
         self.assertIs(naps3.choose_usb_profile(profiles, "ECOSYS MA4000x (USB)"), profiles[1])
 
+    def test_windows_connection_method_uses_only_requested_driver(self) -> None:
+        wia_profile = {"name": "Kyocera WIA", "backend": "wia"}
+        twain_profile = {"name": "Kyocera TWAIN", "backend": "twain"}
+        with mock.patch.object(naps3, "IS_WINDOWS", True), mock.patch.object(
+            naps3, "discover_wia_scanners", return_value=[wia_profile]
+        ) as wia, mock.patch.object(
+            naps3, "discover_twain_scanners", return_value=[twain_profile]
+        ) as twain:
+            self.assertEqual(naps3.discover_usb_scanners("Kyocera", "wia"), [wia_profile])
+            twain.assert_not_called()
+            self.assertEqual(naps3.discover_usb_scanners("Kyocera", "twain"), [twain_profile])
+            self.assertEqual(naps3.discover_usb_scanners("Kyocera", "auto"), [wia_profile, twain_profile])
+        self.assertEqual(wia.call_count, 2)
+        self.assertEqual(twain.call_count, 2)
+
+    def test_twain_hardware_duplex_is_not_rejected_without_resolution_list(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = {
+                "name": "Kyocera ECOSYS MA4000x",
+                "backend": "twain",
+                "device_id": "ECOSYS MA4000x (USB)",
+                "adf_capabilities_known": True,
+                "adf_present": True,
+                "adf_duplex_supported": True,
+            }
+            owner = SimpleNamespace(
+                is_busy=False,
+                source_combo=mock.Mock(get_active_id=lambda: "ADF Duplex"),
+                mode_combo=mock.Mock(get_active_id=lambda: "Color"),
+                dpi_combo=mock.Mock(get_active_id=lambda: "300"),
+                paper_combo=mock.Mock(get_active_id=lambda: "A4"),
+                match_entry=mock.Mock(get_text=lambda: "Kyocera"),
+                scanner_profile=profile,
+                connection_method_combo=mock.Mock(get_active_id=lambda: "twain"),
+                stream_adf_check=mock.Mock(get_active=lambda: True),
+                ask_yes_no=mock.Mock(return_value=True),
+                _save_ui_settings=mock.Mock(),
+                set_busy=mock.Mock(),
+                show_error=mock.Mock(),
+                session_dir=Path(temporary),
+                scan_sequence=0,
+            )
+            with mock.patch.object(naps3, "IS_WINDOWS", True), mock.patch.object(
+                naps3.threading, "Thread"
+            ) as worker:
+                naps3.MainWindow.start_scan(owner)
+            owner.show_error.assert_not_called()
+            owner.source_combo.set_active_id.assert_not_called()
+            owner.set_busy.assert_called_once()
+            worker.assert_called_once()
+
 
 class NetworkScannerDiscoveryTests(unittest.TestCase):
     @staticmethod

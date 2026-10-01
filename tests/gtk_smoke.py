@@ -103,6 +103,15 @@ def main() -> int:
         assert combo_ids(window.source_combo) == [
             "ADF", "ADF Duplex", "Flatbed"
         ]
+        window._update_source_options({
+            "backend": "twain",
+            "adf_capabilities_known": True,
+            "adf_present": True,
+            "adf_duplex_supported": True,
+        })
+        assert combo_ids(window.source_combo) == [
+            "ADF", "ADF Duplex", "ADF Manual Duplex", "Flatbed"
+        ]
 
         window.destroy()
         drain_events()

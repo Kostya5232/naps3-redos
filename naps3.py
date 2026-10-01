@@ -102,6 +102,7 @@ from windows_backend import (
     discover_twain_scanners,
     discover_wia_scanners,
     find_runtime_executable,
+    inspect_twain_device,
     probe_twain_device,
     probe_wia_device,
     resource_path,
@@ -1432,6 +1433,7 @@ def build_hpaio_profile(
 
 def discover_usb_scanners(
     match_filter: str = "",
+    windows_backend_choice: str = "auto",
 ) -> list[dict[str, object]]:
     """
     Find only scanners physically connected to this PC.
@@ -1443,7 +1445,11 @@ def discover_usb_scanners(
     if IS_WINDOWS:
         profiles: list[dict[str, object]] = []
         errors: list[str] = []
-        for discover in (discover_wia_scanners, discover_twain_scanners):
+        discoverers = {
+            "wia": (discover_wia_scanners,),
+            "twain": (discover_twain_scanners,),
+        }.get(windows_backend_choice, (discover_wia_scanners, discover_twain_scanners))
+        for discover in discoverers:
             try:
                 profiles.extend(discover(match_filter))
             except WindowsBackendError as exc:
@@ -3542,6 +3548,21 @@ class MainWindow(Gtk.ApplicationWindow):
             self.match_entry,
         )
 
+        if IS_WINDOWS:
+            self.connection_method_combo = Gtk.ComboBoxText()
+            self.connection_method_combo.append("auto", "WIA и TWAIN")
+            self.connection_method_combo.append("wia", "Только WIA")
+            self.connection_method_combo.append("twain", "Только TWAIN")
+            self.connection_method_combo.set_tooltip_text(
+                "Выберите способ, затем нажмите «Подключить сканер…». "
+                "Сохранённый профиль изменится после выбора устройства."
+            )
+            self._add_labeled_widget(
+                settings_box,
+                "Способ подключения Windows",
+                self.connection_method_combo,
+            )
+
         self.source_combo = Gtk.ComboBoxText()
         self.source_combo.append("ADF", "Автоподатчик")
         self.source_combo.append("ADF Duplex", "Автоподатчик, две стороны")
@@ -4169,6 +4190,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self.match_entry.set_text(
             normalized_match_filter(self.settings.get("match", DEFAULT_MATCH))
         )
+        if IS_WINDOWS:
+            choice = str(self.settings.get("windows_backend_choice", "auto"))
+            self.connection_method_combo.set_active_id(
+                choice if choice in {"auto", "wia", "twain"} else "auto"
+            )
         self.source_combo.set_active_id(
             str(self.settings.get("source", "ADF"))
         )
@@ -4226,14 +4252,17 @@ class MainWindow(Gtk.ApplicationWindow):
         options: list[tuple[str, str]] = []
         if not known or has_adf:
             options.append(("ADF", "Автоподатчик"))
-            if known and not supports_duplex:
+            is_twain = profile.get("backend") == "twain"
+            if is_twain and (supports_duplex or not known):
+                options.append(("ADF Duplex", "Автоподатчик, две стороны (TWAIN)"))
+            if is_twain or (known and not supports_duplex):
                 options.append(
                     (
                         "ADF Manual Duplex",
                         "Автоподатчик, ручной дуплекс",
                     )
                 )
-            else:
+            elif not is_twain:
                 options.append(
                     (
                         "ADF Duplex",
@@ -4274,6 +4303,10 @@ class MainWindow(Gtk.ApplicationWindow):
             "stream_adf": self.stream_adf_check.get_active(),
             "settings_visible": self.settings_toggle.get_active(),
         }
+        if IS_WINDOWS:
+            settings["windows_backend_choice"] = (
+                self.connection_method_combo.get_active_id() or "auto"
+            )
         if self.scanner_profile:
             settings[PROFILE_KEY] = dict(self.scanner_profile)
 
@@ -4593,7 +4626,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._profile_probe_token = probe_token
         self.set_busy(True, "Проверка сохранённого сканера…")
 
-        def ready(error: str) -> bool:
+        def ready(error: str, checked_profile: dict[str, object]) -> bool:
             # A delayed startup probe must not replace a subsequent manual
             # selection or change the status of a scan already in progress.
             if self._profile_probe_token is not probe_token:
@@ -4603,11 +4636,12 @@ class MainWindow(Gtk.ApplicationWindow):
             if self.scanner_profile != profile:
                 return False
             return self._saved_profile_probe_ready(
-                {} if error else profile, error, False
+                {} if error else checked_profile, error, False
             )
 
         def worker() -> None:
             try:
+                checked_profile = dict(profile)
                 # Probe only the saved endpoint. General discovery can prefer
                 # another MFP while the selected one is asleep or disconnected.
                 url = profile_url(profile)
@@ -4623,6 +4657,20 @@ class MainWindow(Gtk.ApplicationWindow):
                         raise Naps3Error(
                             "Выбранный TWAIN-источник больше не зарегистрирован "
                             "в Windows. Проверьте драйвер или выберите сканер заново."
+                        )
+                    try:
+                        capabilities = inspect_twain_device(device_id)
+                    except WindowsBackendError as exc:
+                        checked_profile["adf_capabilities_known"] = False
+                        append_scan_log(
+                            "Saved TWAIN capabilities unavailable: "
+                            f"{compact_details(str(exc), 400)}"
+                        )
+                    else:
+                        checked_profile.update(
+                            adf_capabilities_known=True,
+                            adf_present=capabilities["has_adf"],
+                            adf_duplex_supported=capabilities["has_duplex"],
                         )
                 elif url:
                     if not probe_escl_url(url):
@@ -4652,11 +4700,12 @@ class MainWindow(Gtk.ApplicationWindow):
                         "В сохранённом профиле нет адреса сканера. "
                         "Выберите нужное устройство заново."
                     )
-                GLib.idle_add(ready, "")
+                GLib.idle_add(ready, "", checked_profile)
             except Exception as exc:  # noqa: BLE001
                 GLib.idle_add(
                     ready,
                     friendly_general_error(exc, "проверить выбранный сканер"),
+                    profile,
                 )
 
         threading.Thread(target=worker, daemon=True).start()
@@ -4824,10 +4873,25 @@ class MainWindow(Gtk.ApplicationWindow):
             ),
         )
         match_filter = self.match_entry.get_text().strip()
+        backend_choice = (
+            self.connection_method_combo.get_active_id() or "auto"
+            if IS_WINDOWS else "auto"
+        )
+        if (
+            IS_WINDOWS
+            and backend_choice in {"wia", "twain"}
+            and self.scanner_profile
+            and self.scanner_profile.get("backend") != backend_choice
+            and match_filter == profile_name(self.scanner_profile)
+        ):
+            # A saved TWAIN name often differs from its WIA registration.
+            # Clear only the app-filled exact name when switching drivers.
+            self.match_entry.set_text("")
+            match_filter = ""
 
         def worker() -> None:
             try:
-                profiles = discover_usb_scanners(match_filter)
+                profiles = discover_usb_scanners(match_filter, backend_choice)
                 GLib.idle_add(self._usb_scanners_ready, profiles, "")
             except Exception as exc:  # noqa: BLE001
                 GLib.idle_add(
@@ -4906,6 +4970,47 @@ class MainWindow(Gtk.ApplicationWindow):
                 )
                 return False
 
+        if profile.get("backend") == "twain":
+            self.set_busy(True, "Проверка возможностей выбранного TWAIN-сканера…")
+
+            def inspect_worker() -> None:
+                try:
+                    capabilities = inspect_twain_device(str(profile["device_id"]))
+                    error = ""
+                except (WindowsBackendError, OSError) as exc:
+                    capabilities = {}
+                    error = str(exc)
+                GLib.idle_add(
+                    self._twain_profile_ready, profile, capabilities, error
+                )
+
+            threading.Thread(target=inspect_worker, daemon=True).start()
+            return False
+
+        return self._activate_usb_profile(profile)
+
+    def _twain_profile_ready(
+        self,
+        profile: dict[str, object],
+        capabilities: dict[str, bool],
+        error: str,
+    ) -> bool:
+        self.set_busy(False)
+        if capabilities:
+            profile = {
+                **profile,
+                "adf_capabilities_known": True,
+                "adf_present": capabilities["has_adf"],
+                "adf_duplex_supported": capabilities["has_duplex"],
+            }
+        elif error:
+            profile = {**profile, "adf_capabilities_known": False}
+            append_scan_log(
+                f"TWAIN capabilities unavailable: {compact_details(error, 400)}"
+            )
+        return self._activate_usb_profile(profile)
+
+    def _activate_usb_profile(self, profile: dict[str, object]) -> bool:
         self.scanner_profile = profile
         self.match_entry.set_text(profile_name(profile))
         self._set_device_profile(
@@ -5067,6 +5172,23 @@ class MainWindow(Gtk.ApplicationWindow):
                 "сканер…» и выберите нужное МФУ перед сканированием.",
             )
             return
+        if IS_WINDOWS and cached_profile:
+            method_combo = getattr(self, "connection_method_combo", None)
+            requested_backend = (
+                method_combo.get_active_id() if method_combo else "auto"
+            )
+            if (
+                requested_backend in {"wia", "twain"}
+                and cached_profile.get("backend") in {"wia", "twain"}
+                and cached_profile.get("backend") != requested_backend
+            ):
+                self.show_error(
+                    "Выберите способ подключения",
+                    "Выбран другой способ подключения Windows. Нажмите "
+                    "«Подключить сканер…» и выберите устройство, прежде чем "
+                    "начинать сканирование.",
+                )
+                return
         if (
             cached_profile
             and cached_profile.get("backend") == "twain"
@@ -5133,7 +5255,11 @@ class MainWindow(Gtk.ApplicationWindow):
             if (
                 source == "ADF Duplex"
                 and capabilities_known
-                and not duplex_resolutions
+                and not (
+                    bool(cached_profile.get("adf_duplex_supported"))
+                    if cached_profile.get("backend") in {"wia", "twain"}
+                    else duplex_resolutions
+                )
             ):
                 self.source_combo.set_active_id("ADF Manual Duplex")
                 self._save_ui_settings()
@@ -5387,6 +5513,8 @@ class MainWindow(Gtk.ApplicationWindow):
             return [], f"Не удалось запустить Windows {backend.upper()}: {exc}", profile
 
         self.current_process = process
+        bridge_started = time.monotonic()
+        first_raw_after = None
         try:
             if is_twain:
                 started = time.monotonic()
@@ -5398,9 +5526,11 @@ class MainWindow(Gtk.ApplicationWindow):
                     if page_count > seen_pages:
                         seen_pages = page_count
                         last_progress = time.monotonic()
+                        if first_raw_after is None:
+                            first_raw_after = last_progress - bridge_started
                     now = time.monotonic()
                     if (
-                        now - last_progress > (40 if source != "Flatbed" else 125)
+                        now - last_progress > (100 if source != "Flatbed" else 125)
                         or now - started > 310
                     ):
                         process.kill()
@@ -5421,6 +5551,8 @@ class MainWindow(Gtk.ApplicationWindow):
         finally:
             if self.current_process is process:
                 self.current_process = None
+
+        bridge_seconds = time.monotonic() - bridge_started
 
         raw_files = sorted(
             path
@@ -5446,6 +5578,7 @@ class MainWindow(Gtk.ApplicationWindow):
             for index in range(1, len(raw_files) + 1)
         ]
         workers = 1 if dpi >= 600 else min(2, max(1, len(raw_files)))
+        conversion_started = time.monotonic()
         try:
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=workers
@@ -5470,6 +5603,11 @@ class MainWindow(Gtk.ApplicationWindow):
                 f"{compact_details((twain_error_text if is_twain else bridge_error_text)(stdout, stderr), 600)}"
             )
         append_scan_log(f"{backend.upper()} scan complete pages={len(files)}")
+        append_scan_log(
+            f"{backend.upper()} timing bridge={bridge_seconds:.2f}s "
+            f"first_raw={first_raw_after if first_raw_after is not None else 'unknown'}s "
+            f"conversion={time.monotonic() - conversion_started:.2f}s"
+        )
         updated = dict(profile)
         updated["scan_engine"] = "windows-twain-v1" if is_twain else "windows-wia-v1"
         updated["saved_at"] = int(time.time())
