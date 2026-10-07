@@ -48,6 +48,17 @@ jobs:
           if ((git -C C:\gtk-build\github\gvsbuild rev-parse HEAD).Trim() -ne 'beeef2c42f35d8872412663589effc11851555c6') {
             throw 'Unexpected gvsbuild commit'
           }
+          # gvsbuild 2022.6.0 decodes the OEM output of cmd.exe as the Windows
+          # ANSI code page. Some runner environments contain bytes invalid in
+          # cp1252, so read the Visual Studio environment using its real code page.
+          $builder = 'C:\gtk-build\github\gvsbuild\gvsbuild\utils\builder.py'
+          $source = [IO.File]::ReadAllText($builder).Replace("`r`n", "`n")
+          $old = "            shell=True,`n            text=True,`n        )"
+          $new = "            shell=True,`n            text=True,`n            encoding='oem',`n            errors='replace',`n        )"
+          if ([regex]::Matches($source, [regex]::Escape($old)).Count -ne 1) {
+            throw 'Unexpected Visual Studio environment reader in gvsbuild'
+          }
+          [IO.File]::WriteAllText($builder, $source.Replace($old, $new))
           # SourceForge currently serves an empty libjpeg-turbo archive to CI.
           # The official GitHub release asset has the same pinned SHA-256.
           $recipe = 'C:\gtk-build\github\gvsbuild\gvsbuild\projects\libjpeg_turbo.py'
