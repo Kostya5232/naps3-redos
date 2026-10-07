@@ -2,6 +2,11 @@
 """
 NAPS3 — графическое сканирование документов для РЕД ОС и Windows.
 
+Версия 0.9.7 (кандидат для РЕД ОС):
+- при подключении Kyocera MA4000x по USB предлагается официальный SANE-драйвер;
+- драйвер загружается после согласия и размещается в профиле пользователя;
+- системные файлы и остальные USB-устройства не затрагиваются.
+
 Версия 0.9.6 (кандидат):
 - отдельная 32-битная сборка для Windows 7 x86/x64 на Python 3.8 и GTK 3;
 - резервный импорт PDF через PDFium для этой сборки;
@@ -90,6 +95,8 @@ from dataclasses import dataclass
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
+
+import kyocera_driver
 
 try:
     import fcntl
@@ -186,7 +193,7 @@ except ImportError as exc:
 
 APP_ID = "ru.redos.NAPS3"
 APP_NAME = "NAPS3"
-APP_VERSION = "0.9.6"
+APP_VERSION = "0.9.7"
 DEFAULT_MATCH = ""
 DEFAULT_SCANNER_NAME = "Сканер Windows" if IS_WINDOWS else "Сканер"
 DEFAULT_ESCL_URL = "http://127.0.0.1:60000/eSCL"
@@ -1291,6 +1298,10 @@ def prepare_limited_sane_config(
 def local_sane_backend_environment(backend: str) -> dict[str, str]:
     """Open vendor backends even when the system dll.conf omits them."""
     normalized = backend.casefold().strip()
+    if normalized == kyocera_driver.BACKEND:
+        private_env = kyocera_driver.sane_environment()
+        if private_env is not None:
+            return private_env
     if normalized in {"hp", "hpaio"}:
         return prepare_limited_sane_config(USB_SANE_DIR, ["hpaio"])
     if normalized == "pixma":
@@ -1490,6 +1501,31 @@ def discover_usb_scanners(
     if not url:
         sane_output = list_system_sane_devices()
         sane_items = parse_generic_sane_devices(sane_output)
+
+        # Kyocera's optional backend lives in the user's profile. It is not
+        # registered in the system dll.conf and must be listed explicitly.
+        if kyocera_driver.usb_device_present() and kyocera_driver.is_installed():
+            private_env = kyocera_driver.sane_environment()
+            try:
+                private_list = subprocess.run(
+                    ["scanimage", "-L"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    timeout=7,
+                    check=False,
+                    env=private_env,
+                )
+                if private_list.returncode == 0:
+                    sane_items.extend(parse_generic_sane_devices(
+                        safe_decode(private_list.stdout)
+                    ))
+                else:
+                    append_scan_log(
+                        "Kyocera private SANE discovery failed: "
+                        + compact_details(safe_decode(private_list.stdout), 400)
+                    )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                append_scan_log(f"Kyocera private SANE discovery failed: {exc}")
 
         # Vendor backends can be installed but omitted from the system
         # dll.conf. Probe the two compatibility paths explicitly.
@@ -4951,6 +4987,47 @@ class MainWindow(Gtk.ApplicationWindow):
                 error,
             )
             return False
+        if (
+            not IS_WINDOWS
+            and kyocera_driver.usb_device_present()
+            and not kyocera_driver.is_installed()
+            and not any(
+                profile.get("backend") == kyocera_driver.BACKEND
+                or (
+                    profile.get("backend") == "airscan"
+                    and "kyocera" in str(profile.get("name", "")).casefold()
+                )
+                for profile in profiles
+            )
+            and (
+                not self.match_entry.get_text().strip()
+                or "kyocera" in self.match_entry.get_text().casefold()
+                or "ma4000" in self.match_entry.get_text().casefold()
+            )
+        ):
+            if self.ask_yes_no(
+                "Установить драйвер Kyocera MA4000x?",
+                "Сканер Kyocera MA4000x подключён по USB, но подходящий "
+                "SANE-драйвер не найден. NAPS3 может скачать официальный "
+                "драйвер 2.0.3523 непосредственно с сайта Kyocera и "
+                "установить его только для вашего пользователя. Загрузка "
+                "составляет около 16 МБ. Условия Kyocera на странице модели: "
+                f"{kyocera_driver.LICENSE_URL}\n\n"
+                "Нажимая «Да», вы подтверждаете согласие с условиями "
+                "Kyocera и разрешаете загрузку и настройку драйвера.",
+            ):
+                self.set_busy(True, "Загрузка драйвера Kyocera…")
+
+                def install_worker() -> None:
+                    try:
+                        kyocera_driver.install_official_driver()
+                        install_error = ""
+                    except Exception as exc:  # noqa: BLE001
+                        install_error = str(exc)
+                    GLib.idle_add(self._kyocera_driver_ready, install_error)
+
+                threading.Thread(target=install_worker, daemon=True).start()
+                return False
         if not profiles:
             diagnostic = "" if IS_WINDOWS else usb_diagnostic_text()
             match_filter = self.match_entry.get_text().strip()
@@ -4968,6 +5045,16 @@ class MainWindow(Gtk.ApplicationWindow):
                     "USB-кабель подключён и установлен подходящий SANE-драйвер."
                 )
             )
+            if (
+                not IS_WINDOWS
+                and kyocera_driver.usb_device_present()
+                and kyocera_driver.is_installed()
+            ):
+                message += (
+                    "\n\nДрайвер Kyocera уже загружен, но SANE не смог открыть "
+                    "MA4000x. Проверьте права USB-устройства и журнал scan.log; "
+                    "если МФУ спит, разбудите его и повторите поиск."
+                )
             if self.scanner_profile and match_filter and not profile_matches_filter(
                 self.scanner_profile, match_filter
             ):
@@ -5021,6 +5108,16 @@ class MainWindow(Gtk.ApplicationWindow):
             return False
 
         return self._activate_usb_profile(profile)
+
+    def _kyocera_driver_ready(self, error: str) -> bool:
+        self.set_busy(False)
+        if error:
+            self.show_error("Драйвер Kyocera не установлен", error)
+            self.set_status("Не удалось установить драйвер Kyocera")
+            return False
+        self.set_status("Драйвер Kyocera установлен; повторный поиск сканера…")
+        self.connect_usb_scanner()
+        return False
 
     def _twain_profile_ready(
         self,

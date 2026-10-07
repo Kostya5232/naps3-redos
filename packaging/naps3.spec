@@ -5,7 +5,7 @@
 %global _licensedir /usr/share/licenses
 
 Name:           naps3
-Version:        0.9.5
+Version:        0.9.7
 Release:        1.red80
 Summary:        Сканирование документов через SANE и eSCL
 License:        MIT AND BSD-2-Clause
@@ -42,6 +42,8 @@ install -Dpm0755 naps3.py \
     %{buildroot}%{_libexecdir}/naps3/naps3.py
 install -Dpm0644 windows_backend.py \
     %{buildroot}%{_libexecdir}/naps3/windows_backend.py
+install -Dpm0644 kyocera_driver.py \
+    %{buildroot}%{_libexecdir}/naps3/kyocera_driver.py
 install -Dpm0755 ipp-usb-naps3 \
     %{buildroot}%{_libexecdir}/naps3/ipp-usb-naps3
 install -Dpm0644 ipp-usb.conf \
@@ -61,6 +63,8 @@ install -Dpm0755 packaging/naps3-usb-permissions \
     %{buildroot}%{_libexecdir}/naps3/naps3-usb-permissions
 install -Dpm0644 packaging/99-naps3-canon-mf4410.rules \
     %{buildroot}%{_prefix}/lib/udev/rules.d/99-naps3-canon-mf4410.rules
+install -Dpm0644 packaging/99-naps3-kyocera-ma4000x.rules \
+    %{buildroot}%{_prefix}/lib/udev/rules.d/99-naps3-kyocera-ma4000x.rules
 
 install -Dpm0644 packaging/ipp-usb-naps3-rpm.service.conf \
     %{buildroot}%{_sysconfdir}/systemd/system/ipp-usb.service.d/90-naps3-m428.conf
@@ -74,7 +78,7 @@ install -Dpm0644 LICENSE.ipp-usb \
     %{buildroot}%{_licensedir}/%{name}/LICENSE.ipp-usb
 
 %check
-/usr/bin/python3 -m py_compile naps3.py windows_backend.py
+/usr/bin/python3 -m py_compile naps3.py windows_backend.py kyocera_driver.py
 /usr/bin/bash -n packaging/naps3-launcher
 /usr/bin/bash -n packaging/naps3-usb-permissions
 
@@ -82,7 +86,8 @@ install -Dpm0644 LICENSE.ipp-usb \
 /usr/bin/systemctl daemon-reload >/dev/null 2>&1 || :
 /usr/bin/systemctl restart ipp-usb.service >/dev/null 2>&1 || :
 /usr/bin/rm -f /etc/udev/rules.d/60-naps3-scanners.rules \
-    /etc/udev/rules.d/99-naps3-canon-mf4410.rules >/dev/null 2>&1 || :
+    /etc/udev/rules.d/99-naps3-canon-mf4410.rules \
+    /etc/udev/rules.d/99-naps3-kyocera-ma4000x.rules >/dev/null 2>&1 || :
 %{_libexecdir}/naps3/naps3-usb-permissions >/dev/null 2>&1 || :
 /usr/bin/update-desktop-database %{_datadir}/applications >/dev/null 2>&1 || :
 /usr/bin/gtk-update-icon-cache -f %{_datadir}/icons/hicolor >/dev/null 2>&1 || :
@@ -95,6 +100,8 @@ if [ "$1" -eq 0 ]; then
     /usr/bin/systemctl restart ipp-usb.service >/dev/null 2>&1 || :
     /usr/bin/udevadm trigger --action=add --subsystem-match=usb \
         --attr-match=idVendor=04a9 --attr-match=idProduct=2737 >/dev/null 2>&1 || :
+    /usr/bin/udevadm trigger --action=add --subsystem-match=usb \
+        --attr-match=idVendor=0482 --attr-match=idProduct=0de0 >/dev/null 2>&1 || :
 fi
 /usr/bin/update-desktop-database %{_datadir}/applications >/dev/null 2>&1 || :
 /usr/bin/gtk-update-icon-cache -f %{_datadir}/icons/hicolor >/dev/null 2>&1 || :
@@ -105,6 +112,7 @@ exit 0
 %dir %{_libexecdir}/naps3
 %{_libexecdir}/naps3/naps3.py
 %{_libexecdir}/naps3/windows_backend.py
+%{_libexecdir}/naps3/kyocera_driver.py
 %{_libexecdir}/naps3/ipp-usb-naps3
 %{_libexecdir}/naps3/naps3-usb-permissions
 %dir %{_libexecdir}/naps3/ipp-usb-conf
@@ -115,6 +123,7 @@ exit 0
 %{_datadir}/icons/hicolor/scalable/apps/naps3.svg
 %{_datadir}/icons/hicolor/256x256/apps/naps3.png
 %{_prefix}/lib/udev/rules.d/99-naps3-canon-mf4410.rules
+%{_prefix}/lib/udev/rules.d/99-naps3-kyocera-ma4000x.rules
 %{_sysconfdir}/systemd/system/ipp-usb.service.d/90-naps3-m428.conf
 %doc %{_docdir}/%{name}/README.txt
 %doc %{_docdir}/%{name}/RPM_INSTALL.txt
@@ -122,6 +131,12 @@ exit 0
 %license %{_licensedir}/%{name}/LICENSE.ipp-usb
 
 %changelog
+* Wed Oct 07 2026 NAPS3 contributors <noreply@localhost> - 0.9.7-1.red80
+
+- Offer an official, checksum-pinned Kyocera MA4000x SANE driver on USB connect
+- Install only required vendor files in the user's profile without RPM scripts
+- Grant USB access only to the exact Kyocera 0482:0de0 device
+
 * Fri Sep 25 2026 NAPS3 contributors <noreply@localhost> - 0.9.5-1.red80
 - Add an isolated Windows TWAIN backend for scanners with failing WIA drivers
 - Verify Kyocera ECOSYS MA4000x USB flatbed and feeder scans

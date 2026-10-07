@@ -47,10 +47,11 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 for file in \
-    naps3.py windows_backend.py naps3.svg naps3.png ipp-usb.conf \
+    naps3.py windows_backend.py kyocera_driver.py naps3.svg naps3.png ipp-usb.conf \
     ipp-usb-naps3 ipp-usb-m428.conf ipp-usb-naps3.service.conf \
     packaging/naps3-launcher \
     packaging/99-naps3-canon-mf4410.rules \
+    packaging/99-naps3-kyocera-ma4000x.rules \
     packaging/naps3-usb-permissions LICENSE.ipp-usb; do
     [[ -f "$SCRIPT_DIR/$file" ]] || {
         echo "В папке установщика отсутствует файл: $file" >&2
@@ -138,6 +139,9 @@ rm -f /etc/udev/rules.d/60-naps3-scanners.rules
 install -m 644 \
     "$SCRIPT_DIR/packaging/99-naps3-canon-mf4410.rules" \
     /etc/udev/rules.d/99-naps3-canon-mf4410.rules
+install -m 644 \
+    "$SCRIPT_DIR/packaging/99-naps3-kyocera-ma4000x.rules" \
+    /etc/udev/rules.d/99-naps3-kyocera-ma4000x.rules
 "$SCRIPT_DIR/packaging/naps3-usb-permissions"
 
 echo "Остановка запущенной старой версии NAPS3…"
@@ -147,10 +151,12 @@ sleep 1
 install -d -m 755 /opt/naps3
 install -m 755 "$SCRIPT_DIR/packaging/naps3-usb-permissions" \
     /opt/naps3/naps3-usb-permissions
-install -m 755 "$SCRIPT_DIR/naps3.py" /opt/naps3/naps3.py.new
-mv -f /opt/naps3/naps3.py.new /opt/naps3/naps3.py
 install -m 644 "$SCRIPT_DIR/windows_backend.py" /opt/naps3/windows_backend.py.new
 mv -f /opt/naps3/windows_backend.py.new /opt/naps3/windows_backend.py
+install -m 644 "$SCRIPT_DIR/kyocera_driver.py" /opt/naps3/kyocera_driver.py.new
+mv -f /opt/naps3/kyocera_driver.py.new /opt/naps3/kyocera_driver.py
+install -m 755 "$SCRIPT_DIR/naps3.py" /opt/naps3/naps3.py.new
+mv -f /opt/naps3/naps3.py.new /opt/naps3/naps3.py
 install -m 644 "$SCRIPT_DIR/naps3.png" /opt/naps3/naps3.png
 rm -rf /opt/naps3/__pycache__
 

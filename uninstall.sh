@@ -23,12 +23,16 @@ rm -f /etc/ipp-usb/quirks/90-naps3-hp-m428.conf
 rm -f /etc/systemd/system/ipp-usb.service.d/90-naps3-m428.conf
 rm -f /etc/udev/rules.d/60-naps3-scanners.rules
 rm -f /etc/udev/rules.d/99-naps3-canon-mf4410.rules
+rm -f /etc/udev/rules.d/99-naps3-kyocera-ma4000x.rules
 rmdir /etc/systemd/system/ipp-usb.service.d 2>/dev/null || true
 systemctl daemon-reload
 systemctl restart ipp-usb.service 2>/dev/null || true
 udevadm control --reload-rules 2>/dev/null || true
 udevadm trigger --action=add --subsystem-match=usb \
     --attr-match=idVendor=04a9 --attr-match=idProduct=2737 \
+    2>/dev/null || true
+udevadm trigger --action=add --subsystem-match=usb \
+    --attr-match=idVendor=0482 --attr-match=idProduct=0de0 \
     2>/dev/null || true
 
 update-desktop-database /usr/share/applications >/dev/null 2>&1 || true

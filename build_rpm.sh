@@ -19,12 +19,13 @@ if [[ -z "$VERSION" ]]; then
 fi
 
 for file in \
-    naps3.py windows_backend.py naps3.svg naps3.png ipp-usb.conf ipp-usb-naps3 \
+    naps3.py windows_backend.py kyocera_driver.py naps3.svg naps3.png ipp-usb.conf ipp-usb-naps3 \
     ipp-usb-m428.conf LICENSE LICENSE.ipp-usb README.txt RPM_INSTALL.txt \
     packaging/naps3.spec packaging/naps3-launcher \
     packaging/ru.redos.NAPS3.desktop \
     packaging/ipp-usb-naps3-rpm.service.conf \
     packaging/99-naps3-canon-mf4410.rules \
+    packaging/99-naps3-kyocera-ma4000x.rules \
     packaging/naps3-usb-permissions; do
     [[ -s "$SCRIPT_DIR/$file" ]] || {
         echo "Отсутствует файл пакета: $file" >&2
@@ -84,7 +85,7 @@ mkdir -p \
     "$SOURCE_DIR/packaging"
 
 for file in \
-    naps3.py windows_backend.py naps3.svg naps3.png ipp-usb.conf ipp-usb-naps3 \
+    naps3.py windows_backend.py kyocera_driver.py naps3.svg naps3.png ipp-usb.conf ipp-usb-naps3 \
     ipp-usb-m428.conf LICENSE LICENSE.ipp-usb README.txt RPM_INSTALL.txt; do
     install -m 0644 "$SCRIPT_DIR/$file" "$SOURCE_DIR/$file"
 done
@@ -93,6 +94,7 @@ chmod 0755 "$SOURCE_DIR/naps3.py" "$SOURCE_DIR/ipp-usb-naps3"
 for file in \
     naps3-launcher ru.redos.NAPS3.desktop \
     ipp-usb-naps3-rpm.service.conf 99-naps3-canon-mf4410.rules \
+    99-naps3-kyocera-ma4000x.rules \
     naps3-usb-permissions; do
     install -m 0644 \
         "$SCRIPT_DIR/packaging/$file" \

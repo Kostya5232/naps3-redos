@@ -1,6 +1,6 @@
 # Карта программы NAPS3
 
-Карта текущего исходного кода версии **0.9.6** (кандидат для Windows 7 x86/x64); обновлена 1 октября 2026 года. Стабильный выпуск на GitHub пока остаётся 0.9.5. Источники: граф codebase-memory-mcp, реализации функций, тесты, установочные скрипты и конфигурации пакетов.
+Карта текущего исходного кода версии **0.9.7** (локальный кандидат для РЕД ОС); обновлена 7 октября 2026 года. Публикация на GitHub не выполнялась. Источники: граф codebase-memory-mcp, реализации функций, тесты, установочные скрипты и конфигурации пакетов.
 
 NAPS3 — настольное приложение для сканирования документов на РЕД ОС 8 и Windows 10/11. В экспериментальной ветке подготовлена единая 32-битная сборка для Windows 7 x86 и x64; совместимость ещё нужно проверить на обеих системах. Пользователь подключает сканер, получает страницы со стекла или автоподатчика, меняет их порядок и ориентацию, затем сохраняет PDF, TIFF или отдельные файлы. Изображения и PDF также можно импортировать. Интерфейс и модель документа общие; меняется только системный backend сканера.
 
@@ -19,6 +19,8 @@ flowchart TD
     Main --> UI["MainWindow · GTK 3"]
     Settings["settings.json: параметры и профиль"] <--> UI
     UI --> Discovery["Поиск сканера и проверка возможностей"]
+    Discovery --> KyoceraSetup["MA4000x: согласие → официальный драйвер → профиль пользователя"]
+    KyoceraSetup --> Discovery
     Discovery --> Profile["scanner_profile"]
     UI --> Scan["start_scan → _scan_worker"]
     Profile --> Scan
@@ -29,6 +31,7 @@ flowchart TD
     SANE --> Airscan["sane-airscan"]
     SANE --> Hpaio["hpaio · совместимые USB-модели"]
     SANE --> Vendor["pixma и другие локальные SANE-драйверы"]
+    SANE --> KyoceraBackend["Личный SANE-backend Kyocera MA4000x"]
     Airscan --> Proxy["ipp-usb → USB-сканер"]
     Airscan --> Network["Сетевой сканер"]
     ESCL --> Network
@@ -51,6 +54,7 @@ flowchart TD
 | Файл или каталог | Назначение |
 | --- | --- |
 | [naps3.py](naps3.py) | Приложение: GTK, обнаружение WIA/SANE и сетевого eSCL через DNS-SD/mDNS, сканирование, страницы, импорт и экспорт. |
+| [kyocera_driver.py](kyocera_driver.py) | Загрузка официального SANE-драйвера MA4000x по согласию, проверка SHA-256 и установка выбранных файлов в профиль пользователя без скриптов RPM. |
 | [windows_backend.py](windows_backend.py) | Запуск WIA/TWAIN-мостов, разбор JSON, профили Windows и поиск встроенных программ. |
 | [windows/wia_bridge.cs](windows/wia_bridge.cs) | Нативный помощник без PowerShell: точный выбор WIA DeviceID, стекло/АПД/дуплекс и получение BMP через WIA COM. |
 | [windows/build_wia_bridge.py](windows/build_wia_bridge.py) | Компиляция нативного WIA-помощника системным C#-компилятором Windows. |
@@ -74,7 +78,8 @@ flowchart TD
 | [packaging/naps3-launcher](packaging/naps3-launcher) | Запуск установленного приложения и запись ошибок в `startup.log`. |
 | [packaging/ru.redos.NAPS3.desktop](packaging/ru.redos.NAPS3.desktop) | Ярлык приложения в системном меню. |
 | [packaging/99-naps3-canon-mf4410.rules](packaging/99-naps3-canon-mf4410.rules) | Позднее правило доступа только к Canon MF4410 с USB ID `04a9:2737`. |
-| [packaging/naps3-usb-permissions](packaging/naps3-usb-permissions) | Немедленно применяет правило к уже подключённому Canon, включая удалённые графические сессии. |
+| [packaging/99-naps3-kyocera-ma4000x.rules](packaging/99-naps3-kyocera-ma4000x.rules) | Правило доступа только к Kyocera MA4000x с USB ID `0482:0de0`. |
+| [packaging/naps3-usb-permissions](packaging/naps3-usb-permissions) | Немедленно применяет узкие правила к уже подключённым Canon и Kyocera. |
 | [build_rpm.sh](build_rpm.sh) | Сборка RPM для x86_64, размещение результата и контрольной суммы в `dist/`. |
 | [.github/workflows/checks.yml](.github/workflows/checks.yml) | Проверка синтаксиса, модульные тесты, GTK smoke-тест и проверка shell-скриптов при каждом обновлении `main`. |
 | [.github/workflows/release.yml](.github/workflows/release.yml) | По тегу `v*` повторяет тесты, собирает RPM, создаёт GitHub Release и запускает публикацию DNF. |

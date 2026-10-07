@@ -1,0 +1,7 @@
+# Kyocera ECOSYS MA4000x USB scanner (0482:0de0).
+# Limit access to this exact device; never use the vendor's all-USB rule.
+ACTION!="add|change", GOTO="naps3_kyocera_end"
+SUBSYSTEM!="usb", GOTO="naps3_kyocera_end"
+ENV{DEVTYPE}!="usb_device", GOTO="naps3_kyocera_end"
+ATTR{idVendor}=="0482", ATTR{idProduct}=="0de0", MODE="0666", ENV{libsane_matched}="yes", TAG+="uaccess"
+LABEL="naps3_kyocera_end"

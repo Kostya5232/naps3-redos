@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Apply the Canon MF4410 USB permission fix to a device that is already online.
+# Apply narrowly scoped scanner permissions to already connected devices.
 set -u
 
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
@@ -11,33 +11,50 @@ udevadm control --reload-rules >/dev/null 2>&1 || true
 udevadm trigger --action=change --subsystem-match=usb \
     --attr-match=idVendor=04a9 --attr-match=idProduct=2737 \
     >/dev/null 2>&1 || true
+udevadm trigger --action=change --subsystem-match=usb \
+    --attr-match=idVendor=0482 --attr-match=idProduct=0de0 \
+    >/dev/null 2>&1 || true
 udevadm settle --timeout=5 >/dev/null 2>&1 || true
 
 # uaccess depends on the active local seat and can be absent in a remote
-# desktop session. Repair only the exact Canon USB node immediately; the udev
-# rule above applies the same mode after every reconnect.
+# desktop session. Repair only the two exact USB IDs immediately; the udev
+# rules above apply the same mode after every reconnect.
 shopt -s nullglob
 matched=0
+kyocera_matched=0
 for vendor_file in /sys/bus/usb/devices/*/idVendor; do
     device_dir="${vendor_file%/idVendor}"
     [[ -r "$device_dir/idProduct" ]] || continue
     read -r vendor < "$vendor_file" || continue
     read -r product < "$device_dir/idProduct" || continue
-    [[ ${vendor,,} == "04a9" && ${product,,} == "2737" ]] || continue
+    if [[ ${vendor,,} == "04a9" && ${product,,} == "2737" ]]; then
+        device_name="Canon MF4410"
+    elif [[ ${vendor,,} == "0482" && ${product,,} == "0de0" ]]; then
+        device_name="Kyocera MA4000x"
+    else
+        continue
+    fi
     [[ -r "$device_dir/busnum" && -r "$device_dir/devnum" ]] || continue
     read -r bus_number < "$device_dir/busnum" || continue
     read -r device_number < "$device_dir/devnum" || continue
     printf -v usb_node "/dev/bus/usb/%03d/%03d" \
         "$((10#$bus_number))" "$((10#$device_number))"
     [[ -e "$usb_node" ]] || continue
-    matched=1
     if ! chmod 0666 -- "$usb_node"; then
         echo "Не удалось изменить права $usb_node" >&2
         exit 1
     fi
-    echo "Canon MF4410: права 0666 применены к $usb_node"
+    if [[ $device_name == "Canon MF4410" ]]; then
+        matched=1
+    else
+        kyocera_matched=1
+    fi
+    echo "$device_name: права 0666 применены к $usb_node"
 done
 
 if [[ $matched -eq 0 ]]; then
     echo "Canon MF4410 сейчас не подключён; правило применится при подключении."
+fi
+if [[ $kyocera_matched -eq 0 ]]; then
+    echo "Kyocera MA4000x сейчас не подключена; правило применится при подключении."
 fi

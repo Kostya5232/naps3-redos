@@ -38,7 +38,7 @@ jobs:
         shell: pwsh
         run: |
           python -c "import struct,sys; assert sys.version_info[:2] == (3,8) and struct.calcsize('P') == 4"
-          python -m compileall -q naps3.py pdf_import.py windows_backend.py windows tests
+          python -m compileall -q naps3.py pdf_import.py windows_backend.py kyocera_driver.py windows tests
 
       - name: Fetch pinned GTK build recipe
         shell: pwsh

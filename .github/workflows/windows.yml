@@ -34,7 +34,7 @@ jobs:
       - name: Проверить Python
         shell: msys2 {0}
         run: |
-          python -m py_compile naps3.py windows_backend.py windows/build_wia_bridge.py windows/build_twain_bridge.py windows/startup_hook.py windows/pin_cairo.py windows/check_gui_startup.py
+          python -m py_compile naps3.py windows_backend.py kyocera_driver.py windows/build_wia_bridge.py windows/build_twain_bridge.py windows/startup_hook.py windows/pin_cairo.py windows/check_gui_startup.py
           python -m unittest discover -v -s tests -p 'test_save_safety.py'
           python -m unittest discover -v -s tests -p 'test_*.py'
 

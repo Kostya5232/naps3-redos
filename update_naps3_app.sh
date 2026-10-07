@@ -13,8 +13,12 @@ SOURCE="$SCRIPT_DIR/naps3.py"
 [[ -s "$SOURCE" ]] || { echo "Не найден $SOURCE" >&2; exit 1; }
 BACKEND_SOURCE="$SCRIPT_DIR/windows_backend.py"
 [[ -s "$BACKEND_SOURCE" ]] || { echo "Не найден $BACKEND_SOURCE" >&2; exit 1; }
+DRIVER_SOURCE="$SCRIPT_DIR/kyocera_driver.py"
+[[ -s "$DRIVER_SOURCE" ]] || { echo "Не найден $DRIVER_SOURCE" >&2; exit 1; }
 UDEV_RULE_SOURCE="$SCRIPT_DIR/packaging/99-naps3-canon-mf4410.rules"
 [[ -s "$UDEV_RULE_SOURCE" ]] || { echo "Не найден $UDEV_RULE_SOURCE" >&2; exit 1; }
+KYOCERA_RULE_SOURCE="$SCRIPT_DIR/packaging/99-naps3-kyocera-ma4000x.rules"
+[[ -s "$KYOCERA_RULE_SOURCE" ]] || { echo "Не найден $KYOCERA_RULE_SOURCE" >&2; exit 1; }
 PERMISSION_HELPER="$SCRIPT_DIR/packaging/naps3-usb-permissions"
 [[ -x "$PERMISSION_HELPER" ]] || { echo "Не найден $PERMISSION_HELPER" >&2; exit 1; }
 LAUNCHER_SOURCE="$SCRIPT_DIR/packaging/naps3-launcher"
@@ -59,6 +63,9 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP="${TARGET}.backup-${STAMP}"
 BACKEND_TARGET="$(dirname "$TARGET")/windows_backend.py"
 BACKEND_BACKUP="${BACKEND_TARGET}.backup-${STAMP}"
+DRIVER_TARGET="$(dirname "$TARGET")/kyocera_driver.py"
+DRIVER_BACKUP="${DRIVER_TARGET}.backup-${STAMP}"
+DRIVER_EXISTED=0
 if [[ "$TARGET" == /usr/libexec/naps3/naps3.py ]]; then
     LAUNCHER_TARGET=/usr/bin/naps3
 else
@@ -70,6 +77,10 @@ cp -a "$TARGET" "$BACKUP"
 if [[ -f "$BACKEND_TARGET" ]]; then
     cp -a "$BACKEND_TARGET" "$BACKEND_BACKUP"
 fi
+if [[ -f "$DRIVER_TARGET" ]]; then
+    DRIVER_EXISTED=1
+    cp -a "$DRIVER_TARGET" "$DRIVER_BACKUP"
+fi
 if [[ -f "$LAUNCHER_TARGET" ]]; then
     LAUNCHER_EXISTED=1
     cp -a "$LAUNCHER_TARGET" "$LAUNCHER_BACKUP"
@@ -80,15 +91,22 @@ sleep 1
 
 install -m 0755 "$SOURCE" "${TARGET}.new"
 install -m 0644 "$BACKEND_SOURCE" "${BACKEND_TARGET}.new"
+install -m 0644 "$DRIVER_SOURCE" "${DRIVER_TARGET}.new"
 install -m 0755 "$LAUNCHER_SOURCE" "${LAUNCHER_TARGET}.new"
 mv -f "${TARGET}.new" "$TARGET"
 mv -f "${BACKEND_TARGET}.new" "$BACKEND_TARGET"
+mv -f "${DRIVER_TARGET}.new" "$DRIVER_TARGET"
 mv -f "${LAUNCHER_TARGET}.new" "$LAUNCHER_TARGET"
 rm -rf "$(dirname "$TARGET")/__pycache__"
-if ! /usr/bin/python3 -m py_compile "$TARGET" "$BACKEND_TARGET"; then
+if ! /usr/bin/python3 -m py_compile "$TARGET" "$BACKEND_TARGET" "$DRIVER_TARGET"; then
     cp -a "$BACKUP" "$TARGET"
     if [[ -f "$BACKEND_BACKUP" ]]; then
         cp -a "$BACKEND_BACKUP" "$BACKEND_TARGET"
+    fi
+    if (( DRIVER_EXISTED )); then
+        cp -a "$DRIVER_BACKUP" "$DRIVER_TARGET"
+    else
+        rm -f "$DRIVER_TARGET"
     fi
     if [[ -f "$LAUNCHER_BACKUP" ]]; then
         cp -a "$LAUNCHER_BACKUP" "$LAUNCHER_TARGET"
@@ -101,6 +119,7 @@ fi
 install -d -m 0755 /etc/udev/rules.d
 rm -f /etc/udev/rules.d/60-naps3-scanners.rules
 install -m 0644 "$UDEV_RULE_SOURCE" /etc/udev/rules.d/99-naps3-canon-mf4410.rules
+install -m 0644 "$KYOCERA_RULE_SOURCE" /etc/udev/rules.d/99-naps3-kyocera-ma4000x.rules
 install -m 0755 "$PERMISSION_HELPER" "$(dirname "$TARGET")/naps3-usb-permissions"
 "$PERMISSION_HELPER"
 
@@ -110,6 +129,11 @@ INSTALLED_VERSION="$(sed -nE 's/^APP_VERSION = "([^"]+)"/\1/p' "$TARGET" | head 
     cp -a "$BACKUP" "$TARGET"
     if [[ -f "$BACKEND_BACKUP" ]]; then
         cp -a "$BACKEND_BACKUP" "$BACKEND_TARGET"
+    fi
+    if (( DRIVER_EXISTED )); then
+        cp -a "$DRIVER_BACKUP" "$DRIVER_TARGET"
+    else
+        rm -f "$DRIVER_TARGET"
     fi
     if [[ -f "$LAUNCHER_BACKUP" ]]; then
         cp -a "$LAUNCHER_BACKUP" "$LAUNCHER_TARGET"
